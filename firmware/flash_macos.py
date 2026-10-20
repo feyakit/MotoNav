@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flash the repository's verified 1.75-inch image with the local Arduino esptool."""
+"""Flash the repository's verified board image with the local Arduino esptool."""
 import argparse
 import glob
 import hashlib
@@ -13,7 +13,11 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-BOARD = "Waveshare ESP32-S3-Touch-AMOLED-1.75"
+BOARDS = {
+    "175": "Waveshare ESP32-S3-Touch-AMOLED-1.75",
+    "216": "Waveshare ESP32-S3-Touch-AMOLED-2.16",
+}
+BOARD = BOARDS["175"]
 
 
 def usb_ports():
@@ -33,17 +37,17 @@ def find_tool():
     raise ValueError("未找到 esptool。请先安装 Arduino ESP32 Core 3.3.10。")
 
 
-def validate_images(root=ROOT):
-    source = root / "firmware/boards/175/MotoNav/MotoNav.ino"
+def validate_images(root=ROOT, board="175"):
+    source = root / f"firmware/boards/{board}/MotoNav/MotoNav.ino"
     match = re.search(r'^#define FW_VERSION "v([^\"]+)"', source.read_text(), re.MULTILINE)
     if not match:
         raise ValueError("无法读取当前固件版本。")
     version = match.group(1)
-    folder = root / "firmware/dist/175/panel0"
+    folder = root / f"firmware/dist/{board}/panel0"
     manifests = sorted(folder.glob("*_manifest.json"))
     for path in manifests:
         manifest = json.loads(path.read_text())
-        if manifest.get("firmware") != version or manifest.get("board") != BOARD:
+        if manifest.get("firmware") != version or manifest.get("board") != BOARDS[board]:
             continue
         images = {}
         for item in manifest.get("files", []):
@@ -74,14 +78,15 @@ def flash_command(tool, port, image, full=False):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Mac 一键烧录 MotoNav 1.75 英寸圆屏固件（默认应用升级）")
+    parser = argparse.ArgumentParser(description="Mac 一键烧录 MotoNav 圆屏固件（默认 1.75 英寸，--board 216 选 2.16 英寸）")
     parser.add_argument("--check", action="store_true", help="仅检查工具、固件和串口，不烧录")
+    parser.add_argument("--board", choices=sorted(BOARDS), default="175", help="板型：175（1.75 英寸）或 216（2.16 英寸）")
     parser.add_argument("--port", help="指定实际 USB 串口，例如 /dev/cu.usbmodem…")
     parser.add_argument("--full", action="store_true", help="首次完整安装，替换引导与分区布局")
     args = parser.parse_args(argv)
     try:
         tool = find_tool()
-        version, images = validate_images()
+        version, images = validate_images(board=args.board)
         ports = usb_ports()
         print("MotoNav v" + version + " · 微雪 1.75 英寸圆屏", flush=True)
         print("工具：" + tool, flush=True)

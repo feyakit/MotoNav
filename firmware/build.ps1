@@ -1,16 +1,16 @@
-param([ValidateSet('175','185b')][string]$Board='175',
+param([ValidateSet('175','185b','216')][string]$Board='175',
       [ValidateSet(0,1,2)][int]$PanelVariant=0,
       [string]$CliPath='arduino-cli',[string]$ConfigFile='',
       [ValidateRange(1,32)][int]$Jobs=4)
 $ErrorActionPreference='Stop'
-if($Board -eq '175' -and $PanelVariant -ne 0){throw '1.75 has only panel 0.'}
+if($Board -eq '175' -and $PanelVariant -ne 0){throw '175 has only panel 0.'}
 $taskRoot=$PSScriptRoot
 $taskBuild=Join-Path $taskRoot ".build/$Board"
 $taskSketch=Join-Path $taskBuild 'MotoNav'
 $taskOutput=Join-Path $taskBuild 'output'
 New-Item -ItemType Directory -Force $taskSketch,$taskOutput | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $taskRoot "boards/$Board/MotoNav") -File | Where-Object Extension -in '.ino','.h' | Copy-Item -Destination $taskSketch -Force
-if($Board -eq '185b'){
+if($Board -eq '185b' -or $Board -eq '216'){
     $taskPin=Join-Path $taskSketch 'pin_config.h'
     $taskText=[IO.File]::ReadAllText($taskPin)
     $taskText=[regex]::Replace($taskText,'#define LCD_INIT_VARIANT [0-9]+',"#define LCD_INIT_VARIANT $PanelVariant")
@@ -30,7 +30,7 @@ $taskArgs+=@('compile','--jobs',"$Jobs",'--libraries',(Join-Path $taskRoot 'libr
 if($LASTEXITCODE -ne 0){throw "Arduino build failed ($LASTEXITCODE)"}
 $taskDest=Join-Path $taskRoot "dist/$Board/panel$PanelVariant"
 New-Item -ItemType Directory -Force $taskDest | Out-Null
-$taskLabel=if($Board -eq '175'){'1.75'}else{'1.85B'}
+$taskLabel=if($Board -eq '175'){'1.75'}elseif($Board -eq '216'){'2.16'}else{'1.85B'}
 $taskVersion=[regex]::Match([IO.File]::ReadAllText((Join-Path $taskSketch 'MotoNav.ino')),'^#define FW_VERSION "v([^\"]+)"',[Text.RegularExpressions.RegexOptions]::Multiline).Groups[1].Value
 if(!$taskVersion){throw 'Cannot read firmware version'}
 $taskName="MotoNav_universal_${taskLabel}_v${taskVersion}_panel$PanelVariant"
@@ -51,14 +51,14 @@ $taskFull=[byte[]]::new($taskLength)
 [IO.File]::WriteAllBytes((Join-Path $taskDest "${taskName}_app_0x10000.bin"),$taskApp)
 [IO.File]::WriteAllBytes((Join-Path $taskDest "${taskName}_full_0x0.bin"),$taskFull)
 # Integrity manifest consumed by the Mac flashing entry point; UTF-8 without BOM.
-if($Board -eq '175') {
+if($Board -eq '175' -or $Board -eq '216') {
     $taskManifestFiles=@()
     foreach($taskSuffix in @('app_0x10000','full_0x0')) {
         $taskFileName="${taskName}_${taskSuffix}.bin"
         $taskFilePath=Join-Path $taskDest $taskFileName
         $taskManifestFiles+=@{file=$taskFileName;bytes=(Get-Item -LiteralPath $taskFilePath).Length;sha256=(Get-FileHash -LiteralPath $taskFilePath -Algorithm SHA256).Hash.ToLowerInvariant()}
     }
-    $taskManifest=@{firmware=$taskVersion;platform='universal';board='Waveshare ESP32-S3-Touch-AMOLED-1.75';esp32Core='3.3.10';flashSize='16MB';partition='app3M_fat9M_16MB';verifiedApplicationOffset='0x10000';deviceTested=$false;files=$taskManifestFiles}
+    $taskManifest=@{firmware=$taskVersion;platform='universal';board=if($Board -eq '216'){'Waveshare ESP32-S3-Touch-AMOLED-2.16'}else{'Waveshare ESP32-S3-Touch-AMOLED-1.75'};esp32Core='3.3.10';flashSize='16MB';partition='app3M_fat9M_16MB';verifiedApplicationOffset='0x10000';deviceTested=$false;files=$taskManifestFiles}
     [IO.File]::WriteAllText((Join-Path $taskDest "${taskName}_manifest.json"),($taskManifest | ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
 }
 Get-ChildItem -LiteralPath $taskDest -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
