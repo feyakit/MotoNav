@@ -256,6 +256,7 @@
 #include "IdlePowerOff.h"
 #include "BmsData.h"
 #include "BmsSquareUI.h"
+#include "SquarePages.h"
 #include "BmsScan.h"
 
 // Explicitly opt in for bench testing; never present simulated values as live.
@@ -658,11 +659,7 @@ void setScreenDeg(int d, bool save) {
 
 void initRotSpan() {
   const int c = LCD_WIDTH / 2;
-  for (int y = 0; y < LCD_HEIGHT; y++) {
-    int dy = y - c;
-    int r2 = c * c - dy * dy;
-    rotSpan[y] = r2 > 0 ? (int16_t)sqrtf((float)r2) : 0;
-  }
+  for (int y = 0; y < LCD_HEIGHT; y++) rotSpan[y] = c;  // 480x480 square
 }
 
 // v6.4 停下 1.5 秒后把角度存起来（loop 里调用）
@@ -1541,10 +1538,21 @@ void drawBattery(int x0, int y0, bool backing = false) {
   gfx->print(String(batPct));
 }
 
+void drawNavShortcuts() {
+  gfx->fillRoundRect(8, 8, 82, 30, 6, C_BLACK);
+  BmsSquareUI::text(*gfx, 18, 15, "MENU", 2, C_CYAN);
+  gfx->fillRoundRect(340, 8, 132, 30, 6, C_BLACK);
+  char label[24];
+  if (bms.fresh(millis(), 15000) && (bms.valid & Bms::Soc))
+    snprintf(label, sizeof(label), MOTONAV_BMS_SIMULATION ? "SIM %.1f%%" : "SOC %.1f%%", (double)bms.soc);
+  else snprintf(label, sizeof(label), "SOC --");
+  BmsSquareUI::text(*gfx, 406, 15, label, 2, C_GREEN, true);
+}
 void drawStatus() {
   gfx->fillRect(CX - 9, 21, 9 + 14 + 24 + 2 + 5 + 18 + 4, 19, C_BLACK);   // v7.2 先擦掉旧的（只重画状态栏时用）
   aaDisc(CX, 30, 7, bleConnected ? C_GREEN : C_GREY);
   drawBattery(CX + 14, 24);                               // v6.8 电量（蓝牙小圆点右边）
+  drawNavShortcuts();
   needFlush = true;
 }
 
@@ -1794,6 +1802,22 @@ void drawTextImg(int slot, int y0, uint8_t tint) {
       uint8_t a = cnt ? (sum + cnt / 2) / cnt : 0;
       if (a) gfx->drawPixel(x0 + dx, y0 + dy, greyColor(a, tint));
     }
+  }
+}
+
+// Music metadata is supplied as a phone-rendered bitmap. Fit each image into
+// its own square-screen row so long titles cannot overlap controls or lyrics.
+void drawMusicTextImg(int slot, int y0, int maxHeight, uint8_t tint) {
+  TextImg &im = imgs[slot];
+  if (!im.show || !im.showW || !im.showH) return;
+  float scale = fminf(1.0f, fminf((float)maxHeight / im.showH, 440.0f / im.showW));
+  int dw = max(1, (int)(im.showW * scale)), dh = max(1, (int)(im.showH * scale));
+  int bpr = (im.showW + 1) / 2, x0 = CX - dw / 2;
+  for (int y = 0; y < dh; ++y) for (int x = 0; x < dw; ++x) {
+    int sx = min((int)im.showW - 1, (int)(x / scale));
+    int sy = min((int)im.showH - 1, (int)(y / scale));
+    uint8_t a = imgNib(im, bpr, sx, sy);
+    if (a) gfx->drawPixel(x0 + x, y0 + y, greyColor(a, tint));
   }
 }
 
@@ -2135,6 +2159,8 @@ int page = 0;                               // 0 = 导航 / 首页，1 = 天气�
 unsigned long pageAt = 0;
 bool bmsDetail = false;
 int bmsCellPage = 0;
+bool bmsCellBars = true;
+int bmsScanPage = 0;
 
 // 页面顺序对应滑动位置：音乐在左，主页居中，天气在右；导航主页不显示。
 void drawPageDots() {
@@ -2149,7 +2175,7 @@ void drawWaiting(int st) {
   waitSt = st;
   if (sliding) return;                                                 // v5.5 正在滑动：滑完再画
   if (page == 2) { onWaitScreen = false; musicDirty = true; return; }
-  if (page == 3) { onWaitScreen = false; return; }
+  if (page >= 3) { onWaitScreen = false; return; }
   if (page == 1) { onWaitScreen = false; wxDirty = true; return; }   // v5.3 正在看天气：先不画首页，滑回来时再画
   gfx->fillScreen(C_BLACK);
   onWaitScreen = true; waitSt = st;          // v3.6 首页猫猫 → v4.6 像素骑手
@@ -2400,8 +2426,11 @@ int musicButtonAt(int x, int y);
 void musicTap(int x, int y);
 void dragEnd();
 void dragAbort();
+extern bool dragging;
 void drawBms();
 void touchVectorToCanvas(float &dx, float &dy);
+void openScreen(int p);
+void drawExtraPage();
 
 // 读触摸：按下 → 报坐标；来电时按住够久 → 接听；拖动 → 跟手换页（v5.5）
 // 手指离开超过 0.15 秒才算松开（防止读数偶尔丢一下）
@@ -2434,15 +2463,46 @@ void touchPoll() {
     touchHoldAt = 0;
     if (callOn || pairOn || touchEat || fxOn) dragAbort();
     else {
-      if (page == 2 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) musicTap(touchX0, touchY0);
-      if (page == 1 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) weatherTap();
-      if (page == 3 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) {
+      const int touchPage = page;
+      if (!dragging && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36 && page != 1 && page != 2 && page != 3) {
+        float px = touchX0 - CX, py = touchY0 - CX; touchVectorToCanvas(px, py); px += CX; py += CX;
+        if (page == 0 && py < 65) { if (px < 115) openScreen(4); else if (px > 330) openScreen(3); }
+        else if (page == 4) {
+          if (py < 50) openScreen(0);
+          else if (px >= 20 && px < 460 && py >= 62 && py < 446) {
+            int col = px < 235 ? 0 : 1, row = (int)(py - 62) / 132;
+            if (row < 3 && ((int)(py-62)%132)<120 && ((int)(px-20)%225)<215) {
+              const int targets[] = {0,2,3,5,6,7}; openScreen(targets[row*2+col]);
+            }
+          }
+        } else if (page == 5) {
+          if (py < 50) openScreen(4);
+          else if (py >= 413 && py < 465) { if (px < 240) { bmsScanPage = 0; bmsScan.startScan(); } else bmsScan.disconnect(); drawExtraPage(); }
+          else if (py >= 195 && py < 403) { int idx = bmsScanPage * 4 + (int)(py - 195) / 52; if (idx < (int)bmsScan.count()) bmsScan.connectDevice(idx); drawExtraPage(); }
+        } else if (page >= 6 && py < 65) openScreen(4);
+      }
+      if (touchPage == 2 && page == 2 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) musicTap(touchX0, touchY0);
+      if (touchPage == 1 && page == 1 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) weatherTap();
+      if (!dragging && touchPage == 3 && page == 3 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) {
         float dx = touchX0 - CX, dy = touchY0 - CX;
         touchVectorToCanvas(dx, dy);
         if (!bmsDetail) { bmsDetail = true; bmsCellPage = 0; }
+        else if (dy + CX < 100 && dx + CX >= 240) bmsCellBars = !bmsCellBars;
         else if (dy + CX < 100) bmsDetail = false;
         else bmsCellPage = (bmsCellPage + 1) % 4;
         drawBms();
+      }
+      if (touchPage == 3 && page == 3 && bmsDetail) {
+        float dx = touchX1 - touchX0, dy = touchY1 - touchY0;
+        touchVectorToCanvas(dx, dy);
+        if (fabsf(dy) > 50 && fabsf(dy) > fabsf(dx)) {
+          bmsCellPage = constrain(bmsCellPage + (dy < 0 ? 1 : -1), 0, 3);
+          drawBms();
+        }
+      }
+      if (touchPage == 5 && page == 5) {
+        float dx = touchX1 - touchX0, dy = touchY1 - touchY0; touchVectorToCanvas(dx, dy);
+        if (fabsf(dy) > 50 && fabsf(dy) > fabsf(dx)) { bmsScanPage = (dy < 0 && bmsScan.count() > 4) ? 1 : 0; drawExtraPage(); }
       }
       dragEnd();
     }
@@ -2757,17 +2817,19 @@ void drawMusic() {
   gfx->fillScreen(C_BLACK);
   onWaitScreen = false;
   frameIsMap = false;
-  printCentered("MUSIC", CX, 65, 4, C_CYAN);
+  printCentered("MUSIC", CX, 18, 2, C_CYAN);
+  gfx->fillRoundRect(160, 50, 160, 140, 10, 0x10A3);
+  printCentered("NO COVER", CX, 111, 2, C_GREY);
   bool linked = bleConnected && bleAuthed;
   if (hidMusicMode && linked && !appleMedia.available) {
-    printCentered("PHONE MEDIA KEYS", CX, 158, 2, C_WHITE);
-    printCentered("OPEN MUSIC APP ON PHONE", CX, 210, 2, C_GREY);
+    printCentered("PHONE MEDIA KEYS", CX, 205, 2, C_WHITE);
+    printCentered("OPEN MUSIC APP ON PHONE", CX, 232, 2, C_GREY);
   } else if (linked) {
-    drawTextImg(5, 158, 0xFF);
-    drawTextImg(6, 210, 0xBB);
-  } else printCentered("PHONE OFFLINE", CX, 170, 3, C_GREY);
+    drawMusicTextImg(5, 205, 24, 0xFF);
+    drawMusicTextImg(6, 232, 20, 0xBB);
+  } else printCentered("PHONE OFFLINE", CX, 205, 2, C_GREY);
   bool showLyrics = linked && hidMusicMode && musicLyrics && appleMedia.available && imgs[12].showW > 0;
-  if (showLyrics) drawTextImg(12, 242, 0xDD);
+  if (showLyrics) drawMusicTextImg(12, 256, 20, 0xDD);
   const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER", "HID SENT", "HID NOT READY", "HID SEND FAILED", "AMS SENT", "AMS SEND FAILED", "AMS QUEUED"};
   String state = linked && musicHave ? (musicPlaying ? "PLAYING" : "PAUSED") : "NO PLAYER";
   if (hidMusicMode) {
@@ -2775,9 +2837,9 @@ void drawMusic() {
       : !appleMedia.playback.known ? "STATE UNKNOWN" : appleMedia.playback.state == 1 ? "PLAYING" : appleMedia.playback.state == 0 ? "PAUSED" : "SEEKING";
   }
   if (musicAck > 0 && musicAck <= 11) state = feedback[musicAck];
-  printCentered(state, CX, showLyrics ? 272 : 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
+  printCentered(state, CX, showLyrics ? 282 : 267, 2, musicAck == 4 ? C_ORANGE : C_GREY);
   for (int i = 0; i < 3; i++) {
-    int x = CX + (i - 1) * 100, y = 335;
+    int x = CX + (i - 1) * 100, y = 380;
     bool enabled = hidMusicMode ? (hidMediaReady() || appleMedia.controlReady(i)) : linked && musicHave;
     uint16_t c = enabled ? C_WHITE : C_GREY;
     aaDisc(x, y, 43, enabled && musicPressed == i ? 0x0470 : enabled ? 0x19A7 : 0x1082);
@@ -2800,10 +2862,13 @@ void drawMusic() {
     if (duration > 0 && appleMedia.playback.known) {
       double elapsed = appleMedia.playback.elapsed + appleMedia.playback.rate * (millis() - appleMedia.playbackAt) / 1000.0;
       int sec = (int)constrain(elapsed, 0.0, duration), total = (int)duration;
+      gfx->fillRoundRect(30, 312, 420, 7, 3, 0x3186);
+      int progress = duration > 0 ? (int)(420.0 * sec / duration) : 0;
+      if (progress > 0) gfx->fillRect(30, 312, constrain(progress, 0, 420), 7, C_CYAN);
       char time[32]; snprintf(time, sizeof(time), "%d:%02d / %d:%02d", sec/60, sec%60, total/60, total%60);
-      printCentered(time, CX, 392, 2, C_GREY);
+      printCentered(time, CX, 327, 1, C_GREY);
     }
-  } else printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
+  } else printCentered("SWIPE LEFT TO RETURN", CX, 327, 1, C_GREY);
   drawPageDots();
   needFlush = true;
 }
@@ -2828,22 +2893,50 @@ static inline uint16_t dim565(uint16_t c, uint32_t k) {   // k: 0~32，32 = 原�
 // Reuses the production Arduino_GFX canvas; unavailable data is never invented.
 void drawBms() {
   onWaitScreen = false; frameIsMap = false;
-  if (bmsDetail) BmsSquareUI::cells(*gfx, bms, millis(), MOTONAV_BMS_SIMULATION, bmsCellPage);
+  if (bmsDetail) BmsSquareUI::cells(*gfx, bms, millis(), MOTONAV_BMS_SIMULATION, bmsCellPage, bmsCellBars);
   else BmsSquareUI::dashboard(*gfx, bms, millis(), MOTONAV_BMS_SIMULATION);
   needFlush = true;
 }
 
 // 画一个页面到画布（不改当前页）
+void drawExtraPage() {
+  onWaitScreen = false; frameIsMap = false;
+  if (page == 4) SquarePages::menu(*gfx);
+  else if (page == 5) {
+    SquarePages::Device dev[4] = {}; char addresses[4][18] = {};
+    int offset = bmsScanPage * 4;
+    int n = max(0, min(4, (int)bmsScan.count() - offset));
+    for (int i=0; i<n; ++i) { const auto &d = bmsScan.device(i + offset);
+      snprintf(addresses[i],sizeof(addresses[i]),"%02X:%02X:%02X:%02X:%02X:%02X",d.addr[5],d.addr[4],d.addr[3],d.addr[2],d.addr[1],d.addr[0]);
+      dev[i] = {d.name, addresses[i], d.rssi};
+    }
+    char age[20];
+    if (MOTONAV_BMS_SIMULATION) snprintf(age,sizeof(age),"SIM");
+    else if (bms.hasUpdate) snprintf(age,sizeof(age),"%lus", (unsigned long)((millis()-bms.updatedAt)/1000));
+    else snprintf(age,sizeof(age),"--");
+    SquarePages::bluetooth(*gfx, bleConnected && bleAuthed, bmsScan.isConnected(), bmsScan.isConnecting(), bmsScan.scanning(), bmsScan.isRetryEnabled(), age, dev, n);
+  } else SquarePages::info(*gfx, page == 7);
+  needFlush = true;
+}
 void renderPage(int p) {
   int keep = page;
   bool ks = sliding;
   page = p; sliding = false;
-  if (p == 3) drawBms();
+  if (p >= 4) drawExtraPage();
+  else if (p == 3) drawBms();
   else if (p == 2) drawMusic();
   else if (p == 1) drawWeather();
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
   page = keep; sliding = ks;
+}
+
+void openScreen(int p) {
+  page = p; pageAt = millis(); onWaitScreen = false;
+  if (p == 3) { bmsDetail = false; bmsCellPage = 0; }
+  if (p == 2) { musicDirty = true; pendingEvt = "T,M,Q"; }
+  if (p == 0 && inNav) navDirty = true;
+  renderPage(p); needFlush = true;
 }
 
 // 准备滑动：存下屏幕上的旧画面，在画布上画好目标页面存起来
@@ -2854,8 +2947,7 @@ bool slidePrepare(int target) {
   if (!slideOld || !slideNew) return false;
   if (!chordReady) {
     for (int y = 0; y < LCD_HEIGHT; y++) {
-      float d = y + 0.5f - LCD_HEIGHT / 2.0f, r = LCD_WIDTH / 2.0f + 1;
-      chordHalf[y] = d * d < r * r ? (int16_t)ceilf(sqrtf(r * r - d * d)) : 0;
+      chordHalf[y] = LCD_WIDTH / 2;  // preserve square corners during page transitions
     }
     chordReady = true;
   }
@@ -3008,6 +3100,7 @@ void dragMove(int dx, int dy, unsigned long now) {
     dragHoriz = abs(dx) >= abs(dy);
     int d = dragHoriz ? dx : dy;
     dragSign = d > 0 ? 1 : -1;
+    if (page >= 4) return;
     if (page == 2) { if (!dragHoriz || dragSign > 0) return; dragTarget = 0; }
     else if (page == 3) { if (!dragHoriz || dragSign < 0) return; dragTarget = 1; }
     else if (page == 1) dragTarget = dragHoriz && dragSign < 0 ? 3 : 0;
@@ -3053,7 +3146,7 @@ int musicButtonAt(int x, int y) {
   x = lroundf(CX + dx); y = lroundf(CX + dy);
   for (int i = 0; i < 3; i++) {
     int bx = CX + (i - 1) * 100;
-    if ((x - bx) * (x - bx) + (y - 335) * (y - 335) <= 49 * 49) return i;
+    if ((x - bx) * (x - bx) + (y - 380) * (y - 380) <= 49 * 49) return i;
   }
   return -1;
 }
@@ -8879,7 +8972,7 @@ void animateRing() {
 // 按当前全部状态画一整帧导航画面
 void drawNavFrame() {
   onWaitScreen = false;                                 // v3.6 离开首页，猫猫不再动
-  if (mapModeActive()) { drawMapFrame(); return; }      // v2.0 小地图
+  if (mapModeActive()) { drawMapFrame(); drawNavShortcuts(); return; }      // v2.0 小地图
   viewInit = false;
   if (cruiseOn) {                                       // v4.8 巡航但还没有地图：只显示车速和测速
     gfx->fillScreen(C_BLACK);
@@ -9564,14 +9657,16 @@ void loop() {
 #if MOTONAV_BMS_SIMULATION
   // Explicit bench-only fixture; refreshed locally, never derived from BLE.
   bms.link = Bms::Link::Connected; bms.hasUpdate = true; bms.updatedAt = millis();
-  bms.valid = Bms::Soc | Bms::Voltage | Bms::Current | Bms::Temperature | Bms::Cells;
-  bms.soc = 40.6f; bms.voltage = 78.89f; bms.current = 0; bms.temperature = 22;
+  bms.valid = Bms::Soc | Bms::Voltage | Bms::Current | Bms::Temperature | Bms::Cells | Bms::Remaining | Bms::Rated;
+  bms.soc = 40.6f; bms.voltage = 78.89f; bms.current = 0; bms.temperature = 22; bms.remainingAh = 18.84f; bms.ratedAh = 45;
   for (int i = 0; i < 24; ++i) bms.cells[i] = 3.286f + (i % 3) * 0.001f;
 #endif
   static uint32_t bmsDrawAt = 0;
   if (!callOn && !pairOn && !sliding && millis() - bmsDrawAt >= 1000) {
     bmsDrawAt = millis();
     if (page == 3) drawBms();
+    else if (page == 5) drawExtraPage();
+    else if (page == 0 && inNav) navDirty = true;
     else if (page == 0 && onWaitScreen) {
       gfx->fillRect(CX - 110, 305, 220, 18, C_BLACK);
       printCentered(bms.fresh(millis(), 15000) && (bms.valid & Bms::Soc) ? String(MOTONAV_BMS_SIMULATION ? "BMS SIM " : "BMS ") + String(bms.soc, 0) + "%" : "BMS --", CX, 305, 2, C_GREY);
@@ -9593,6 +9688,7 @@ void loop() {
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
     else if (page == 3) drawBms();
+    else if (page >= 4) drawExtraPage();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9609,6 +9705,7 @@ void loop() {
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
     else if (page == 3) drawBms();
+    else if (page >= 4) drawExtraPage();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9629,6 +9726,7 @@ void loop() {
       if (page == 2) musicDirty = true;
       else if (page == 1) wxDirty = true;
       else if (page == 3) drawBms();
+      else if (page >= 4) drawExtraPage();
       else if (inNav) navDirty = true;
       else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
     }

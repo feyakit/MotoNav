@@ -3,6 +3,11 @@
 #include <cmath>
 int main() {
   Bms::Data d;
+  d.valid = Bms::Cycles | Bms::Alarms;
+  d.cycles = 125; d.alarms = 3;
+  assert((d.valid & Bms::Cycles) && (d.valid & Bms::Alarms));
+  assert(!(d.valid & Bms::Remaining) && !(d.valid & Bms::Health));
+  d.valid = 0;
   float delta = 0;
   assert(!d.fresh(0, 1000));
   assert(!d.maxDelta(delta));

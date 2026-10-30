@@ -41,3 +41,7 @@ arduino-cli compile --jobs 4 --libraries firmware/libraries \
 ```
 
 For the simulation build, use a separate build/output directory and add `--build-property 'compiler.cpp.extra_flags=-DMOTONAV_BMS_SIMULATION=1'`. A build result does not establish display geometry, radio coexistence, actual BMS behavior or runtime heap headroom.
+
+## Square UI continuation
+
+The data model now has separate validity bits for remaining/rated capacity, health, cycles and alarms. The 2.16 square UI adds menu and BLE management using bounded passive-scan results, explicit selection and disconnect, plus battery cell bar/list mode and vertical group scrolling. Navigation keeps its existing route/map pipeline and has MENU/SOC shortcuts; music uses the existing controls and phone-rendered text, with an explicit no-cover placeholder. Transition and free-rotation destination clipping use square spans. These changes have not been tested on a device. See `docs/bms/SOURCE_REVIEW.md` and `docs/bms/visual-review/README.md` for architecture findings, software previews, visual differences, limitations, and reproduction. The six-page visual acceptance and live protocol identification are not complete.

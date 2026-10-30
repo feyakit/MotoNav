@@ -74,6 +74,7 @@ class BmsDiscovery {
   }
 public:
   bool isConnected() const { return conn != 0xffff; }
+  bool isRetryEnabled() const { return retryEnabled; }
   bool isConnecting() const { return connecting; }
   void begin() { queue = xQueueCreate(24, sizeof(Event)); packets = xQueueCreate(8, sizeof(Packet)); }
   void command(const char *s) {

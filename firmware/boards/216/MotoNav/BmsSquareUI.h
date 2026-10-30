@@ -45,13 +45,16 @@ template<class G> void dashboard(G &g,const Bms::Data &b,uint32_t now,bool sim) 
   if(fresh && (b.valid & Bms::Voltage)) snprintf(v,sizeof(v),"%.2f V",(double)b.voltage); else snprintf(v,sizeof(v),"-- V");
   if(fresh && (b.valid & Bms::Current)) snprintf(a,sizeof(a),"%.1f A",(double)b.current); else snprintf(a,sizeof(a),"-- A");
   if(fresh && (b.valid & Bms::Temperature)) snprintf(t,sizeof(t),"%.0f C",(double)b.temperature); else snprintf(t,sizeof(t),"-- C");
-  if(fresh && (b.valid & Bms::Soc)) snprintf(cap,sizeof(cap),"%.2f Ah",45.0*b.soc/100); else snprintf(cap,sizeof(cap),"-- Ah");
+  if(fresh && (b.valid & Bms::Remaining)) snprintf(cap,sizeof(cap),"%.2f Ah",(double)b.remainingAh); else snprintf(cap,sizeof(cap),"-- Ah");
   if(fresh && b.maxDelta(d)) snprintf(delta,sizeof(delta),"%.0f mV",(double)(d*1000)); else snprintf(delta,sizeof(delta),"-- mV");
-  card(g,16,300,v,"PACK VOLTAGE"); card(g,168,300,cap,"EST. CAPACITY"); card(g,320,300,a,"CURRENT");
-  card(g,16,370,t,"TEMPERATURE"); card(g,168,370,delta,"CELL SPREAD"); card(g,320,370,fresh ? "DATA" : "OFFLINE","LINK",fresh ? GREEN : MUTED);
+  card(g,16,300,v,"PACK VOLTAGE"); card(g,168,300,cap,"REMAINING"); card(g,320,300,a,"CURRENT");
+  char health[24];
+  if(fresh && (b.valid & Bms::Health)) snprintf(health,sizeof(health),"%.0f%%",(double)b.soh); else snprintf(health,sizeof(health),"--%%");
+  const char *status = !fresh || !(b.valid & Bms::Alarms) ? "--" : b.alarms ? "ALERT" : "OK";
+  card(g,16,370,t,"TEMPERATURE"); card(g,168,370,health,"HEALTH"); card(g,320,370,status,"BMS STATUS",fresh && (b.valid & Bms::Alarms) ? (b.alarms ? YELLOW : GREEN) : MUTED);
   text(g,240,453,"TAP FOR CELLS",1,MUTED,true);
 }
-template<class G> void cells(G &g,const Bms::Data &b,uint32_t now,bool sim,int part) {
+template<class G> void cells(G &g,const Bms::Data &b,uint32_t now,bool sim,int part,bool bars=true) {
   bool fresh=b.fresh(now,15000), valid=fresh && (b.valid & Bms::Cells);
   if(part<0 || part>3) part=0;
   top(g,fresh,sim);
@@ -62,11 +65,11 @@ template<class G> void cells(G &g,const Bms::Data &b,uint32_t now,bool sim,int p
   for(int row=0;row<6;++row){
     int i=part*6+row, y=104+row*41;
     if(row%2==0) g.fillRoundRect(16,y,448,38,5,CARD);
-    snprintf(s,sizeof(s),"%02d",i+1); text(g,28,y+11,s,2,MUTED);
+    snprintf(s,sizeof(s),"%02d",i+1); text(g,28,y+11,s,2,valid && i==high ? GREEN : valid && i==low ? BLUE : MUTED);
     if(valid) snprintf(s,sizeof(s),"%.3f V",(double)b.cells[i]); else snprintf(s,sizeof(s),"--.--- V");
-    text(g,106,y+11,s,2,WHITE);
-    g.fillRoundRect(285,y+8,159,22,4,TRACK);
-    if(valid){float p=fmaxf(0,fminf(1,(b.cells[i]-2.5f)/1.15f)); int width=(int)(159*p); if(width>0) g.fillRoundRect(285,y+8,width,22,4,GREEN);}
+    text(g,106,y+11,s,2,valid && i==high ? GREEN : valid && i==low ? BLUE : WHITE);
+    if(bars) g.fillRoundRect(285,y+8,159,22,4,TRACK);
+    if(valid && bars){float p=fmaxf(0,fminf(1,(b.cells[i]-2.5f)/1.15f)); int width=(int)(159*p); if(width>0) g.fillRoundRect(285,y+8,width,22,4,GREEN);}
   }
   g.fillRect(16,358,448,2,CARD);
   char a[24],c[24],d[24];
@@ -75,6 +78,6 @@ template<class G> void cells(G &g,const Bms::Data &b,uint32_t now,bool sim,int p
   text(g,88,375,"MAX",1,MUTED,true); text(g,240,375,"MIN",1,MUTED,true); text(g,392,375,"SPREAD",1,MUTED,true);
   text(g,88,393,a,2,GREEN,true); text(g,240,393,c,2,GREEN,true); text(g,392,393,d,2,GREEN,true);
   if(valid){snprintf(s,sizeof(s),"#%02d",high+1);text(g,88,418,s,1,MUTED,true);snprintf(s,sizeof(s),"#%02d",low+1);text(g,240,418,s,1,MUTED,true);}
-  text(g,240,453,"TAP: NEXT  |  TOP: BACK",1,MUTED,true);
+  text(g,240,453,"SWIPE: PAGE  |  TOP: BACK / MODE",1,MUTED,true);
 }
 }
