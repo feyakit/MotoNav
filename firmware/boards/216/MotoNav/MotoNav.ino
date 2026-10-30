@@ -9478,7 +9478,9 @@ void idlePowerOffShutdown() {
 void loop() {
   bmsScan.tick();
 #if !MOTONAV_BMS_SIMULATION
-  bms.link = bmsScan.isConnected() ? Bms::Link::Connected : bmsScan.isConnecting() ? Bms::Link::Connecting : Bms::Link::Disconnected;
+  Bms::Link nextBmsLink = bmsScan.isConnected() ? Bms::Link::Connected : bmsScan.isConnecting() ? Bms::Link::Connecting : Bms::Link::Disconnected;
+  if (nextBmsLink != bms.link) { bms.valid = 0; bms.hasUpdate = false; }
+  bms.link = nextBmsLink;
 #endif
   hidMediaTick();                                      // press/release without blocking navigation
   static uint32_t lyricConnectionEpoch = 0;
