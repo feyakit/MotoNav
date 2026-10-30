@@ -2818,7 +2818,7 @@ void drawBms() {
   gfx->fillScreen(C_BLACK);
   printCentered(MOTONAV_BMS_SIMULATION ? "BMS SIMULATION" : "BMS", CX, 53, 2, C_CYAN);
   bool fresh = bms.fresh(millis(), 15000);
-  printCentered(fresh ? "CONNECTED" : "NO LIVE DATA", CX, 78, 2, fresh ? C_GREEN : C_GREY);
+  printCentered(fresh ? "CONNECTED" : bms.link == Bms::Link::Connected ? "CONNECTED / NO DATA" : bms.link == Bms::Link::Connecting ? "CONNECTING" : "NO LIVE DATA", CX, 78, 2, fresh ? C_GREEN : C_GREY);
   String summary = fresh && (bms.valid & Bms::Soc) ? String("SOC ") + String(bms.soc, 0) + "%" : "SOC --";
   if (fresh && (bms.valid & Bms::Voltage)) summary += String("  ") + String(bms.voltage, 1) + "V";
   printCentered(summary, CX, 105, 2, C_WHITE);
@@ -9477,6 +9477,9 @@ void idlePowerOffShutdown() {
 
 void loop() {
   bmsScan.tick();
+#if !MOTONAV_BMS_SIMULATION
+  bms.link = bmsScan.isConnected() ? Bms::Link::Connected : bmsScan.isConnecting() ? Bms::Link::Connecting : Bms::Link::Disconnected;
+#endif
   hidMediaTick();                                      // press/release without blocking navigation
   static uint32_t lyricConnectionEpoch = 0;
   if (lyricConnectionEpoch != mediaConnectionEpoch) {
