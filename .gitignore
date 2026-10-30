@@ -38,3 +38,4 @@ private*
 __pycache__/
 *.pyc
 firmware/.preview/
+firmware/boards/216/MotoNav/build/

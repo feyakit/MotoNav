@@ -9348,8 +9348,8 @@ bool sqSlotAvail(int slot) { return imgs[slot].show && imgs[slot].showW > 0; }
 void sqSlot(int slot, int x, int y, int maxW, int align, uint8_t tint) { drawTextImgAt(slot, x, y, maxW, align, tint); }
 void sqTurnIcon(float cx, float top, float bottom, float maxW, bool nearTurn) {
   bool isS = navDir == "S";
-  if (!isS && navDist > STAGE_FAR_M) drawPreview(navDir, (top + bottom) / 2, 0.42f, top, bottom);   // 远处预告（灰）
-  else drawBigIconAt(isS ? String("S") : navDir, nearTurn ? C_ORANGE : C_WHITE, (top + bottom) / 2, 0.5f, cx, top, bottom, maxW);
+  uint16_t col = (!isS && navDist > STAGE_FAR_M) ? C_DIM : nearTurn ? C_ORANGE : C_WHITE;   // 远处：灰色预告
+  drawBigIconAt(isS ? String("S") : navDir, col, (top + bottom) / 2, 0.5f, cx, top, bottom, maxW);
 }
 void sqLanes(float cx, float y, float maxW, float h) { drawLanesAt(cx, y, maxW, h); }
 
