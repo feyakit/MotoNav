@@ -254,6 +254,15 @@
 #include <esp_system.h>
 #include <driver/rtc_io.h>
 #include "IdlePowerOff.h"
+#include "BmsData.h"
+#include "BmsScan.h"
+
+// Explicitly opt in for bench testing; never present simulated values as live.
+#ifndef MOTONAV_BMS_SIMULATION
+#define MOTONAV_BMS_SIMULATION 0
+#endif
+Bms::Data bms;
+BmsScan bmsScan;
 #include <driver/spi_master.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -2121,15 +2130,15 @@ void animateCat() {
 }
 
 // 页面：导航左滑天气，右滑音乐，上下滑也可查看天气
-int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐
+int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐，3 = 电池
 unsigned long pageAt = 0;
 
 // 页面顺序对应滑动位置：音乐在左，主页居中，天气在右；导航主页不显示。
 void drawPageDots() {
   if (page == 0 && inNav) return;
-  const int pageOrder[] = {2, 0, 1};
-  for (int i = 0; i < 3; i++) {
-    aaDisc(CX + (i - 1) * 20, 444, 4, page == pageOrder[i] ? C_WHITE : 0x4208);
+  const int pageOrder[] = {2, 0, 1, 3};
+  for (int i = 0; i < 4; i++) {
+    aaDisc(CX + (i * 20 - 30), 444, 4, page == pageOrder[i] ? C_WHITE : 0x4208);
   }
 }
 
@@ -2137,6 +2146,7 @@ void drawWaiting(int st) {
   waitSt = st;
   if (sliding) return;                                                 // v5.5 正在滑动：滑完再画
   if (page == 2) { onWaitScreen = false; musicDirty = true; return; }
+  if (page == 3) { onWaitScreen = false; return; }
   if (page == 1) { onWaitScreen = false; wxDirty = true; return; }   // v5.3 正在看天气：先不画首页，滑回来时再画
   gfx->fillScreen(C_BLACK);
   onWaitScreen = true; waitSt = st;          // v3.6 首页猫猫 → v4.6 像素骑手
@@ -2152,6 +2162,7 @@ void drawWaiting(int st) {
     drawRedRing();
     printCentered("LINK LOST", CX, 275, 4, C_RED);
   }
+  printCentered(bms.fresh(millis(), 15000) && (bms.valid & Bms::Soc) ? String(MOTONAV_BMS_SIMULATION ? "BMS SIM " : "BMS ") + String(bms.soc, 0) + "%" : "BMS --", CX, 305, 2, C_GREY);
   printCentered(bleName, CX, 332, 2, C_GREY);                          // v7.0 这块圆屏的蓝牙名
   printCentered(String("fw ") + FW_VERSION + "  " + String(qspiMHz) + "MHz", CX, 360, 2, C_GREY);
   drawStatus();
@@ -2801,12 +2812,37 @@ static inline uint16_t dim565(uint16_t c, uint32_t k) {   // k: 0~32，32 = 原�
   return (uint16_t)(((r * k >> 5) << 11) | ((g * k >> 5) << 5) | (b * k >> 5));
 }
 
+// Cell values are displayed only when the entire sample is valid and fresh.
+void drawBms() {
+  onWaitScreen = false;
+  gfx->fillScreen(C_BLACK);
+  printCentered(MOTONAV_BMS_SIMULATION ? "BMS SIMULATION" : "BMS", CX, 53, 2, C_CYAN);
+  bool fresh = bms.fresh(millis(), 15000);
+  printCentered(fresh ? "CONNECTED" : "NO LIVE DATA", CX, 78, 2, fresh ? C_GREEN : C_GREY);
+  String summary = fresh && (bms.valid & Bms::Soc) ? String("SOC ") + String(bms.soc, 0) + "%" : "SOC --";
+  if (fresh && (bms.valid & Bms::Voltage)) summary += String("  ") + String(bms.voltage, 1) + "V";
+  printCentered(summary, CX, 105, 2, C_WHITE);
+  float delta;
+  if (fresh && bms.maxDelta(delta)) printCentered(String("DELTA ") + String(delta * 1000, 0) + "mV", CX, 130, 2, C_GREY);
+  for (int i = 0; i < 24; ++i) {
+    int col = i / 12, row = i % 12;
+    gfx->setTextSize(2); gfx->setTextColor(C_WHITE);
+    gfx->setCursor(85 + col * 160, 161 + row * 20);
+    if (i < 9) gfx->print("0");
+    gfx->print(i + 1); gfx->print(" ");
+    if (fresh && (bms.valid & Bms::Cells)) gfx->print(String(bms.cells[i], 3));
+    else gfx->print("---");
+  }
+  drawPageDots(); needFlush = true;
+}
+
 // 画一个页面到画布（不改当前页）
 void renderPage(int p) {
   int keep = page;
   bool ks = sliding;
   page = p; sliding = false;
-  if (p == 2) drawMusic();
+  if (p == 3) drawBms();
+  else if (p == 2) drawMusic();
   else if (p == 1) drawWeather();
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
@@ -2915,6 +2951,8 @@ void slideCommit() {
   needFlush = true; frameIsMap = false;
   if (page == 2) {
     onWaitScreen = false; musicDirty = true; pendingEvt = "T,M,Q";
+  } else if (page == 3) {
+    onWaitScreen = false;
   } else if (page == 1) {
     lastSlideSx = dragHoriz ? dragSign : 0; lastSlideSy = dragHoriz ? 0 : dragSign;
     onWaitScreen = false;
@@ -2932,6 +2970,7 @@ void slideCancel() {
   renderPage(page);
   if (page == 2) musicDirty = true;
   else if (page == 1) wxDirty = false;
+  else if (page == 3) onWaitScreen = false;
   else if (inNav) navDirty = true;
   else { onWaitScreen = true; catForce = true; }
   needFlush = true;
@@ -2973,7 +3012,8 @@ void dragMove(int dx, int dy, unsigned long now) {
     int d = dragHoriz ? dx : dy;
     dragSign = d > 0 ? 1 : -1;
     if (page == 2) { if (!dragHoriz || dragSign > 0) return; dragTarget = 0; }
-    else if (page == 1) dragTarget = 0;
+    else if (page == 3) { if (!dragHoriz || dragSign < 0) return; dragTarget = 1; }
+    else if (page == 1) dragTarget = dragHoriz && dragSign < 0 ? 3 : 0;
     else if (dragHoriz) dragTarget = dragSign < 0 ? 1 : 2;
     else dragTarget = 1;
     if (!slidePrepare(dragTarget)) return;
@@ -3006,7 +3046,7 @@ void dragEnd() {
 void dragAbort() {
   if (!dragging) return;
   sliding = false; dragging = false;
-  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true; else if (inNav) navDirty = true;
+  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true; else if (page == 3) drawBms(); else if (inNav) navDirty = true;
 }
 
 // 将触摸点换算到画布坐标，按钮使用较大的点按范围。
@@ -9363,6 +9403,7 @@ void setup() {
   svc->start();
   initMediaHid(server);
   appleMedia.begin();
+  bmsScan.begin();
   BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(SERVICE_UUID);
   adv->addServiceUUID(BLEUUID((uint16_t)0x1812));
@@ -9435,6 +9476,7 @@ void idlePowerOffShutdown() {
 }
 
 void loop() {
+  bmsScan.tick();
   hidMediaTick();                                      // press/release without blocking navigation
   static uint32_t lyricConnectionEpoch = 0;
   if (lyricConnectionEpoch != mediaConnectionEpoch) {
@@ -9517,6 +9559,23 @@ void loop() {
   if (mapNow != wasMap) { wasMap = mapNow; navDirty = true; }   // 进出地图模式时整帧重画
   if (mapNow) navDirty = true;
 
+#if MOTONAV_BMS_SIMULATION
+  // Explicit bench-only fixture; refreshed locally, never derived from BLE.
+  bms.link = Bms::Link::Connected; bms.hasUpdate = true; bms.updatedAt = millis();
+  bms.valid = Bms::Soc | Bms::Voltage | Bms::Current | Bms::Temperature | Bms::Cells;
+  bms.soc = 73; bms.voltage = 79.2f; bms.current = -5; bms.temperature = 25;
+  for (int i = 0; i < 24; ++i) bms.cells[i] = 3.288f + i * 0.001f;
+#endif
+  static uint32_t bmsDrawAt = 0;
+  if (!callOn && !pairOn && !sliding && millis() - bmsDrawAt >= 1000) {
+    bmsDrawAt = millis();
+    if (page == 3) drawBms();
+    else if (page == 0 && onWaitScreen) {
+      gfx->fillRect(CX - 110, 305, 220, 18, C_BLACK);
+      printCentered(bms.fresh(millis(), 15000) && (bms.valid & Bms::Soc) ? String(MOTONAV_BMS_SIMULATION ? "BMS SIM " : "BMS ") + String(bms.soc, 0) + "%" : "BMS --", CX, 305, 2, C_GREY);
+      needFlush = true;
+    }
+  }
   touchPoll();                                         // v5.2 按住接听 / v5.3 滑动换页
   batPoll();                                           // v6.8 电量
   // 4. 需要时重画导航画面
@@ -9531,6 +9590,7 @@ void loop() {
     pairOn = false; pairDone = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page == 3) drawBms();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9546,6 +9606,7 @@ void loop() {
     wasCall = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page == 3) drawBms();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9565,6 +9626,7 @@ void loop() {
     if (!callOn && !pairOn) {
       if (page == 2) musicDirty = true;
       else if (page == 1) wxDirty = true;
+      else if (page == 3) drawBms();
       else if (inNav) navDirty = true;
       else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
     }
