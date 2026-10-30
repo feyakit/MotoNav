@@ -37,3 +37,4 @@ private*
 
 __pycache__/
 *.pyc
+firmware/.preview/
