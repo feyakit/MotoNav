@@ -232,7 +232,7 @@
 //   U,1                   v6.5 这台手机通过了配对验证（连上后发 3 次）
 //   V,电量,充电,USB,mV    v6.8 圆屏电池（电量 -1 = 没接电池）
 
-#define FW_VERSION "v7.12.1-216"
+#define FW_VERSION "v7.12.1-216-linktop"
 
 // 调试时想在串口监视器里看到每条收到的文字指令，把 0 改成 1
 #define DEBUG_SERIAL 0
@@ -267,6 +267,36 @@
 #include <miniz.h>            // 罪恶都市轮廓：仅接收地图时解压
 #include "BootAnimation.h"
 #include "DragonRadar.h"
+// linktop：方屏 UI（导航卡片 / 电池 / 24 串电芯 / 音乐 / 蓝牙设备 / 功能菜单）+ 只读 BMS 蓝牙客户端
+#include "SqPages.h"
+#include "BmsData.h"
+#include "BmsBle.h"
+#ifndef SQ_NAV_CARDS
+#define SQ_NAV_CARDS 1          // 1 = 箭头导航用方屏卡片布局；0 = 原圆形布局
+#endif
+#ifndef BMS_SIM_DEFAULT
+#define BMS_SIM_DEFAULT 1       // 开发分支默认显示“模拟数据”（界面明确标注）；设置页可关
+#endif
+void sqDrawStatus(bool opaque);
+void sqDrawMusic();
+void sqDrawPage(int p);
+bool sqNavCards();
+void sqTap(int x, int y);
+void sqScrollBegin();
+void sqScrollMove(int dy);
+void bmsSetup();
+void bmsLoop();
+BmsData bmsData;                 // 电池数据（SIM 模拟 / LIVE 真实；协议未验证前不会出现 LIVE）
+BmsBle bmsBle;                   // 只读 BMS 蓝牙客户端
+bool bmsSim = BMS_SIM_DEFAULT;
+extern bool dragging;            // 定义在后面（跟手换页）
+bool sqDirty = false;            // 新页面需要重画
+bool sqScrolling = false;        // 正在上下滚动列表
+int sqScrollBase = 0;
+int sqCellMode = 0, sqCellScroll = 0, sqBleScroll = 0;
+bool clockKnown = false;         // 手机发来过时间（"#T,HHMM"）
+int clockBaseMin = 0;
+unsigned long clockBaseMs = 0;
 int bootBrand = 0;
 String pendingBootAck;
 #include <esp_mac.h>           // v7.0 读蓝牙地址，拼蓝牙名
@@ -1532,9 +1562,7 @@ void drawBattery(int x0, int y0, bool backing = false) {
 }
 
 void drawStatus() {
-  gfx->fillRect(CX - 9, 21, 9 + 14 + 24 + 2 + 5 + 18 + 4, 19, C_BLACK);   // v7.2 先擦掉旧的（只重画状态栏时用）
-  aaDisc(CX, 30, 7, bleConnected ? C_GREEN : C_GREY);
-  drawBattery(CX + 14, 24);                               // v6.8 电量（蓝牙小圆点右边）
+  sqDrawStatus(true);                                     // linktop：方屏顶部状态栏（时间 / 电池 SOC / 蓝牙 / BMS 链接）
   needFlush = true;
 }
 
@@ -2138,6 +2166,7 @@ void drawWaiting(int st) {
   if (sliding) return;                                                 // v5.5 正在滑动：滑完再画
   if (page == 2) { onWaitScreen = false; musicDirty = true; return; }
   if (page == 1) { onWaitScreen = false; wxDirty = true; return; }   // v5.3 正在看天气：先不画首页，滑回来时再画
+  if (page >= 3) { onWaitScreen = false; sqDirty = true; return; }   // linktop 新页面
   gfx->fillScreen(C_BLACK);
   onWaitScreen = true; waitSt = st;          // v3.6 首页猫猫 → v4.6 像素骑手
   riderPrevF = -1; riderPrevZ = -2;
@@ -2420,6 +2449,7 @@ void touchPoll() {
     else {
       if (page == 2 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) musicTap(touchX0, touchY0);
       if (page == 1 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) weatherTap();
+      if ((page == 0 || page >= 3) && !dragging && !sqScrolling && abs(touchX1 - touchX0) < 24 && abs(touchY1 - touchY0) < 24) sqTap(touchX0, touchY0);
       dragEnd();
     }
     touchEat = false;
@@ -2730,6 +2760,9 @@ void drawNavFrame();
 
 // v7.8 音乐页：歌名/歌手图片栏 5/6；#Z,有会话,播放中,按钮位掩码。
 void drawMusic() {
+  sqDrawMusic();                                        // linktop：方屏音乐页（状态逻辑同原版，见 sqDrawMusic）
+}
+void drawMusicRound() {                                 // 原圆形布局（保留备查，未调用）
   gfx->fillScreen(C_BLACK);
   onWaitScreen = false;
   frameIsMap = false;
@@ -2808,6 +2841,7 @@ void renderPage(int p) {
   page = p; sliding = false;
   if (p == 2) drawMusic();
   else if (p == 1) drawWeather();
+  else if (p >= 3) sqDrawPage(p);
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
   page = keep; sliding = ks;
@@ -2920,6 +2954,8 @@ void slideCommit() {
     onWaitScreen = false;
     wxDirty = false;
     if (!wxHave || millis() - wxAt > 15UL * 60 * 1000) { pendingEvt = "T,W"; wxAskAt = millis(); }
+  } else if (page >= 3) {
+    onWaitScreen = false; sqDirty = false;
   } else {
     if (inNav) navDirty = true;
     else { riderPrevF = -1; riderPrevZ = -2; catForce = true; }
@@ -2932,6 +2968,7 @@ void slideCancel() {
   renderPage(page);
   if (page == 2) musicDirty = true;
   else if (page == 1) wxDirty = false;
+  else if (page >= 3) sqDirty = false;
   else if (inNav) navDirty = true;
   else { onWaitScreen = true; catForce = true; }
   needFlush = true;
@@ -2966,16 +3003,21 @@ void dragMove(int dx, int dy, unsigned long now) {
   float vx = dx, vy = dy;
   touchVectorToCanvas(vx, vy);
   dx = (int)lroundf(vx); dy = (int)lroundf(vy);
+  if (sqScrolling) { sqScrollMove(dy); return; }          // linktop：电芯/蓝牙列表上下滚动
   if (!dragging) {
     int threshold = page == 2 ? 36 : DRAG_START;
     if (abs(dx) < threshold && abs(dy) < threshold) return;
     dragHoriz = abs(dx) >= abs(dy);
     int d = dragHoriz ? dx : dy;
     dragSign = d > 0 ? 1 : -1;
+    if (!dragHoriz && (page == sq::P_CELLS || page == sq::P_BLE)) { sqScrollBegin(); sqScrollMove(dy); return; }
     if (page == 2) { if (!dragHoriz || dragSign > 0) return; dragTarget = 0; }
     else if (page == 1) dragTarget = 0;
+    else if (page == sq::P_MENU) dragTarget = 0;                      // 菜单：任意方向滑回导航
+    else if (page == sq::P_CELLS) dragTarget = sq::P_BATTERY;          // 电芯：左右滑回电池主页
+    else if (page >= 3) dragTarget = sq::P_MENU;                       // 其他新页面：滑回菜单
     else if (dragHoriz) dragTarget = dragSign < 0 ? 1 : 2;
-    else dragTarget = 1;
+    else dragTarget = dragSign < 0 ? sq::P_MENU : 1;                   // linktop：主页上滑 = 功能菜单，下滑 = 天气
     if (!slidePrepare(dragTarget)) return;
     dragging = true;
     dragP = 0; dragV = 0; dragT = now;
@@ -2990,6 +3032,7 @@ void dragMove(int dx, int dy, unsigned long now) {
 
 // 松手：拖过 30% 或者往前甩出去 → 顺势滑完；否则弹回
 void dragEnd() {
+  if (sqScrolling) { sqScrolling = false; return; }
   if (!dragging) return;
   int full = dragHoriz ? LCD_WIDTH : LCD_HEIGHT;
   bool go = dragP > full * 0.3f || (dragV > 0.35f && dragP > 24);
@@ -3006,7 +3049,7 @@ void dragEnd() {
 void dragAbort() {
   if (!dragging) return;
   sliding = false; dragging = false;
-  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true; else if (inNav) navDirty = true;
+  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true; else if (page >= 3) sqDirty = true; else if (inNav) navDirty = true;
 }
 
 // 将触摸点换算到画布坐标，按钮使用较大的点按范围。
@@ -3014,11 +3057,7 @@ int musicButtonAt(int x, int y) {
   float dx = x - CX, dy = y - CX;
   touchVectorToCanvas(dx, dy);
   x = lroundf(CX + dx); y = lroundf(CX + dy);
-  for (int i = 0; i < 3; i++) {
-    int bx = CX + (i - 1) * 100;
-    if ((x - bx) * (x - bx) + (y - 335) * (y - 335) <= 49 * 49) return i;
-  }
-  return -1;
+  return sq::hitMusic(x, y);                              // linktop：方屏音乐按钮位置
 }
 
 void musicTap(int x, int y) {
@@ -8793,7 +8832,7 @@ void drawMapFrame() {
   profMark(9);
   hasCam = saveCam; tripOn = saveTrip;
   drawNavHints(300);                                    // v5.0 重新规划中 / 更快路线 / GPS 信号弱
-  drawBattery(CX - 16, 18, true);                         // v6.8 电量（车速上方）；v7.2 带黑底
+  sqDrawStatus(false);                                  // linktop：方屏状态栏（半透明，盖在地图上）
   profMark(10);
   // v2.9 小地图里不画顶部的蓝牙小圆点（会和 N 标记重叠；能收到地图就说明连着）
   needFlush = true;
@@ -8854,6 +8893,7 @@ void drawNavFrame() {
     needFlush = true;
     return;
   }
+  if (sqNavCards()) return;                              // linktop：方屏卡片布局（SQ_NAV_CARDS=0 回到原圆形布局）
   gfx->fillScreen(C_BLACK);
   bool isS = (navDir == "S");
   bool isFar = !isS && navDist > STAGE_FAR_M;
@@ -8916,6 +8956,11 @@ int hexVal(char c) {
 
 // 处理文字类消息
 void handleText(const String &m) {
+  if (m.startsWith("#T,")) {                             // linktop：手机时间 "#T,HHMM"（可选；旧 App 不发则状态栏不显示时间）
+    int v = m.substring(3).toInt();
+    if (v >= 0 && v < 2400 && v % 100 < 60) { clockBaseMin = (v / 100) * 60 + v % 100; clockBaseMs = millis(); clockKnown = true; }
+    return;
+  }
   if (m.startsWith("#LY,")) {
     unsigned long gen = 0; unsigned title = 0, artist = 0;
     if (sscanf(m.c_str(), "#LY,%lu,%u,%u", &gen, &title, &artist) == 3 && gen == appleMedia.generation &&
@@ -9275,6 +9320,254 @@ void makeBleName() {
   bleName = b;
 }
 
+// ======================= linktop：方屏 UI 与只读 BMS 集成 =======================
+// 页面画在 gfx 的帧缓冲上（SqPages.h，和桌面预览共用代码）。手机文字图片 / 转向图标 / 车道复用原有绘制函数。
+
+// 文字图片画到任意位置（按 maxW 等比缩小；align 0 左 1 中 2 右）
+void drawTextImgAt(int slot, int x, int y0, int maxW, int align, uint8_t tint) {
+  TextImg &im = imgs[slot];
+  if (!im.show || im.showW == 0 || im.showH == 0) return;
+  int bpr = (im.showW + 1) / 2;
+  float s = im.showW > maxW ? (float)maxW / im.showW : 1.0f;
+  int dw = (int)(im.showW * s), dh = (int)(im.showH * s);
+  if (dw < 1 || dh < 1) return;
+  int x0 = align == 1 ? x - dw / 2 : align == 2 ? x - dw : x;
+  float inv = 1.0f / s;
+  for (int dy = 0; dy < dh; dy++) {
+    int sy0 = (int)(dy * inv), sy1 = max(sy0 + 1, min((int)im.showH, (int)((dy + 1) * inv)));
+    for (int dx = 0; dx < dw; dx++) {
+      int sx0 = (int)(dx * inv), sx1 = max(sx0 + 1, min((int)im.showW, (int)((dx + 1) * inv)));
+      int sum = 0, cnt = 0;
+      for (int yy = sy0; yy < sy1; yy++) for (int xx = sx0; xx < sx1; xx++) { sum += imgNib(im, bpr, xx, yy); cnt++; }
+      uint8_t a = cnt ? (sum + cnt / 2) / cnt : 0;
+      if (a) gfx->drawPixel(x0 + dx, y0 + dy, greyColor(a, tint));
+    }
+  }
+}
+bool sqSlotAvail(int slot) { return imgs[slot].show && imgs[slot].showW > 0; }
+void sqSlot(int slot, int x, int y, int maxW, int align, uint8_t tint) { drawTextImgAt(slot, x, y, maxW, align, tint); }
+void sqTurnIcon(float cx, float top, float bottom, float maxW, bool nearTurn) {
+  bool isS = navDir == "S";
+  if (!isS && navDist > STAGE_FAR_M) drawPreview(navDir, (top + bottom) / 2, 0.42f, top, bottom);   // 远处预告（灰）
+  else drawBigIconAt(isS ? String("S") : navDir, nearTurn ? C_ORANGE : C_WHITE, (top + bottom) / 2, 0.5f, cx, top, bottom, maxW);
+}
+void sqLanes(float cx, float y, float maxW, float h) { drawLanesAt(cx, y, maxW, h); }
+
+int sqClockMin() {
+  if (!clockKnown) return -1;
+  return (int)((clockBaseMin + (millis() - clockBaseMs) / 60000UL) % 1440);
+}
+
+sq::State sqState() {
+  sq::State st;
+  st.now = millis();
+  st.clockMin = sqClockMin();
+  st.phoneConn = bleConnected; st.phoneAuthed = bleAuthed;
+  if (bleConnected && bleConnHandle != 0xFFFF && page == sq::P_BLE) { int8_t v; if (!ble_gap_conn_rssi(bleConnHandle, &v)) st.phoneRssi = v; }
+  st.bleName = bleName.c_str(); st.fw = FW_VERSION; st.boardBatPct = batPct;
+  st.bms = &bmsData; st.simOn = bmsSim; st.link = bmsBle.link;
+  st.scan = bmsBle.items; st.scanN = bmsBle.itemN; st.scanning = bmsBle.scanning;
+  st.inNav = inNav; st.navDist = navDist; st.speed = speedKmh; st.camLimit = camLimit; st.hasCam = hasCam;
+  st.nearTurn = navDist <= STAGE_NEAR_M && navDir != "S";
+  st.tripOn = tripOn; st.tripRemainM = tripRemainM; st.tripEtaHHMM = tripOn ? tripEta : -1;
+  st.tripFrac = tripOn ? tripFrac() : -1;
+  st.cellMode = sqCellMode; st.cellScroll = sqCellScroll; st.bleScroll = sqBleScroll;
+  st.slotAvail = sqSlotAvail; st.slot = sqSlot; st.turnIcon = sqTurnIcon; st.lanes = sqLanes; st.haveLanes = laneN > 0;
+  return st;
+}
+
+void sqDrawStatus(bool opaque) {
+  sq::State st = sqState();
+  sq::Canvas c(gfx->getFramebuffer());
+  if (opaque) { sq::statusBar(c, st); return; }
+  // 地图上：顶部一条压暗，状态栏只画前景（statusBar 涂黑的像素换回压暗后的地图）
+  for (int y = 0; y < sq::SB_H; y++) for (int x = 0; x < LCD_WIDTH; x++) c.blend(x, y, 0, 170);
+  static uint16_t *band = nullptr;
+  const size_t BYTES = (size_t)sq::SB_H * LCD_WIDTH * 2;
+  if (!band) band = (uint16_t *)heap_caps_malloc(BYTES, MALLOC_CAP_SPIRAM);
+  if (!band) { sq::statusBar(c, st); return; }
+  uint16_t *fb = gfx->getFramebuffer();
+  memcpy(band, fb, BYTES);
+  sq::statusBar(c, st);
+  for (int i = 0; i < sq::SB_H * LCD_WIDTH; i++) if (fb[i] == 0) fb[i] = band[i];
+}
+
+void sqDrawPage(int p) {
+  sq::State st = sqState();
+  sq::Canvas c(gfx->getFramebuffer());
+  onWaitScreen = false; frameIsMap = false;
+  switch (p) {
+    case sq::P_BATTERY: sq::pageBattery(c, st); break;
+    case sq::P_CELLS: sq::pageCells(c, st); break;
+    case sq::P_BLE: sq::pageBle(c, st); break;
+    case sq::P_MENU: sq::pageMenu(c, st); break;
+    case sq::P_SETTINGS: sq::pageSettings(c, st); break;
+    case sq::P_ABOUT: sq::pageAbout(c, st); break;
+    default: sq::pageMenu(c, st); break;
+  }
+  needFlush = true;
+}
+
+bool sqNavCards() {
+#if SQ_NAV_CARDS
+  sq::State st = sqState();
+  sq::Canvas c(gfx->getFramebuffer());
+  char num[16], unit[4];
+  if (navDist >= 1000) { snprintf(num, sizeof num, "%.1f", navDist / 1000.0f); strcpy(unit, "km"); }
+  else { snprintf(num, sizeof num, "%d", navDist); strcpy(unit, "m"); }
+  sq::pageNav(c, st, num, unit);
+  drawNavHints(186);                                    // 重新规划 / 更快路线 / GPS 弱
+  needFlush = true;
+  return true;
+#else
+  return false;
+#endif
+}
+
+// 音乐页：状态文字和按钮可用性沿用原版逻辑，只换方屏布局
+void sqDrawMusic() {
+  onWaitScreen = false; frameIsMap = false;
+  sq::State st = sqState();
+  bool linked = bleConnected && bleAuthed;
+  static const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER", "HID SENT", "HID NOT READY", "HID SEND FAILED", "AMS SENT", "AMS SEND FAILED", "AMS QUEUED"};
+  String state = linked && musicHave ? (musicPlaying ? "PLAYING" : "PAUSED") : "NO PLAYER";
+  if (hidMusicMode) {
+    state = !hidMediaReady() ? (appleMedia.controlMask() ? "AMS MEDIA READY" : "PAIR HID IN PHONE SETTINGS") : !appleMedia.available ? "HID READY / AMS UNAVAILABLE"
+      : !appleMedia.playback.known ? "STATE UNKNOWN" : appleMedia.playback.state == 1 ? "PLAYING" : appleMedia.playback.state == 0 ? "PAUSED" : "SEEKING";
+  }
+  if (musicAck > 0 && musicAck <= 11) state = feedback[musicAck];
+  st.musicLinked = linked;
+  st.musicHave = musicHave || (hidMusicMode && appleMedia.available);
+  st.musicPlaying = hidMusicMode ? (appleMedia.playback.known && appleMedia.playback.state == 1) : musicPlaying;
+  st.musicState = state.c_str();
+  st.musicPressed = musicPressed;
+  if (hidMusicMode && appleMedia.available) {
+    double duration = AppleMediaData::duration(appleMedia.values[3].text.c_str());
+    if (duration > 0 && appleMedia.playback.known) {
+      double elapsed = appleMedia.playback.elapsed + appleMedia.playback.rate * (millis() - appleMedia.playbackAt) / 1000.0;
+      st.musicElapsed = (int)constrain(elapsed, 0.0, duration); st.musicTotal = (int)duration;
+    }
+  }
+  // HID 模式且 AMS 不可用时，手机不发歌名图片：用状态文字代替
+  if (hidMusicMode && linked && !appleMedia.available) st.slotAvail = nullptr;
+  sq::Canvas c(gfx->getFramebuffer());
+  sq::pageMusic(c, st);
+  needFlush = true;
+}
+
+// 触摸点 → 画布坐标（与 musicButtonAt 相同的翻转/旋转换算）
+static void sqTouchToCanvas(int &x, int &y) {
+  float dx = x - CX, dy = y - CX;
+  touchVectorToCanvas(dx, dy);
+  x = lroundf(CX + dx); y = lroundf(CX + dy);
+}
+
+void bmsSaveTarget(bool have) {
+  Preferences pr; pr.begin("motonav", false);
+  if (have) {
+    const ble_addr_t &a = bmsBle.targetAddr();
+    pr.putBytes("bmsaddr", a.val, 6); pr.putUChar("bmstype", a.type); pr.putString("bmsname", bmsBle.link.name);
+  } else { pr.remove("bmsaddr"); pr.remove("bmstype"); pr.remove("bmsname"); }
+  pr.end();
+}
+
+void bmsApplySim() {
+  if (bmsSim) bmsData.loadSimulation(millis());
+  else if (bmsData.src == BmsData::SIM) bmsData.clear();
+}
+
+void sqGo(int target) {
+  if (target == page) { sqDirty = true; return; }
+  showPageAnimated(target, -1, 0);
+}
+
+void sqTap(int x, int y) {
+  if (callOn || pairOn || fxOn) return;
+  sqTouchToCanvas(x, y);
+  if (sq::hitStatusSoc(x, y) && page != sq::P_BATTERY) { sqGo(sq::P_BATTERY); return; }   // 点状态栏 SOC → 电池主页
+  switch (page) {
+    case sq::P_BATTERY: if (sq::hitBatteryCells(x, y)) sqGo(sq::P_CELLS); break;
+    case sq::P_CELLS: if (sq::hitCellsMode(x, y)) { sqCellMode ^= 1; sqDirty = true; } break;
+    case sq::P_MENU: { int i = sq::hitMenu(x, y); if (i >= 0) sqGo(sq::MENU_TARGET[i]); break; }
+    case sq::P_SETTINGS: {
+      int i = sq::hitSettings(x, y);
+      if (i == 0) { bmsSim = !bmsSim; Preferences pr; pr.begin("motonav", false); pr.putBool("bmssim", bmsSim); pr.end(); bmsApplySim(); sqDirty = true; }
+      if (i == 1) { bmsBle.forget(); bmsSaveTarget(false); sqDirty = true; }
+      break;
+    }
+    case sq::P_BLE: {
+      sq::State st = sqState();
+      int h = sq::hitBle(st, x, y);
+      if (h == 100) bmsBle.startScan();
+      else if (h == 0) { if (bmsBle.link.state >= 2) bmsBle.disconnect(); else if (bmsBle.hasTarget()) bmsBle.enableAutoRetry(true); }
+      else if (h >= 10) { bmsBle.stopScan(); bmsBle.connectItem(h - 10); bmsSaveTarget(true); }
+      sqDirty = true;
+      break;
+    }
+  }
+}
+
+void sqScrollBegin() {
+  sqScrolling = true;
+  sqScrollBase = page == sq::P_CELLS ? sqCellScroll : sqBleScroll;
+}
+void sqScrollMove(int dy) {
+  float vx = 0, vy = dy; touchVectorToCanvas(vx, vy); dy = (int)vy;
+  if (page == sq::P_CELLS) {
+    sq::State st = sqState();
+    int v = constrain(sqScrollBase - dy, 0, sq::cellScrollMax(st));
+    if (v != sqCellScroll) { sqCellScroll = v; sqDrawPage(page); }
+  } else if (page == sq::P_BLE) {
+    int v = constrain(sqScrollBase - dy / 60, 0, max(0, bmsBle.itemN - 2));
+    if (v != sqBleScroll) { sqBleScroll = v; sqDrawPage(page); }
+  }
+}
+
+void bmsSetup() {
+  bmsBle.begin(&bmsData);
+  Preferences pr; pr.begin("motonav", true);
+  bmsSim = pr.getBool("bmssim", BMS_SIM_DEFAULT);
+  uint8_t v[6];
+  if (pr.getBytesLength("bmsaddr") == 6 && pr.getBytes("bmsaddr", v, 6) == 6) {
+    ble_addr_t a{}; a.type = pr.getUChar("bmstype", 0); memcpy(a.val, v, 6);
+    String nm = pr.getString("bmsname", "");
+    bmsBle.setTarget(a, nm.c_str());                     // 有保存的目标：后台自动重连（非阻塞，15 秒间隔）
+  }
+  pr.end();
+  bmsApplySim();
+  Serial.println("BMS read-only client ready. Serial cmds: bms scan | bms list | bms connect <i> | bms disconnect | bms forget");
+}
+
+void bmsLoop() {
+  // 串口调试命令（115200，一行一条）
+  static char line[48]; static int ln = 0;
+  while (Serial.available()) {
+    int ch = Serial.read();
+    if (ch == '\n' || ch == '\r') {
+      if (ln) { line[ln] = 0; if (!strncmp(line, "bms", 3)) bmsBle.serialCommand(line); ln = 0; }
+    } else if (ln < (int)sizeof(line) - 1) line[ln++] = ch;
+  }
+  bmsBle.tick();
+  if (bmsBle.forgetReq) { bmsBle.forgetReq = false; bmsSaveTarget(false); }
+  if (bmsSim && bmsData.src != BmsData::SIM) bmsApplySim();
+  // 刷新：BMS 状态变化、或 BMS 相关页面每 2 秒（让“x 秒前”“数据过期”按时更新）
+  static unsigned long lastSq = 0; static int lastMin = -2;
+  unsigned long now = millis();
+  bool changed = bmsBle.changed; bmsBle.changed = false;
+  int m = sqClockMin();
+  if (callOn || pairOn || sliding || fxOn) return;
+  if (page >= 3) {
+    // 导航中快到路口：回导航（和天气页一致）
+    if (inNav && !cruiseOn && navDir != "S" && navDir.length() && navDist > 0 && navDist < 200 && now - pageAt > 3000) { showPageAnimated(0, 1, 0); return; }
+    bool bmsPage = page == sq::P_BATTERY || page == sq::P_CELLS || page == sq::P_BLE;
+    if (sqDirty || (bmsPage && (changed || now - lastSq > 2000)) || m != lastMin) { sqDirty = false; lastSq = now; lastMin = m; sqDrawPage(page); }
+  } else if (page == 0 && (changed || m != lastMin)) {
+    lastMin = m;
+    if (onWaitScreen) drawStatus();
+    else if (inNav) navDirty = true;
+  }
+}
+
 void setup() {
   makeBleName();                                       // v7.0 先算好蓝牙名（首页要显示）
   Serial.begin(115200);
@@ -9369,6 +9662,7 @@ void setup() {
   adv->setAppearance(GENERIC_HID);
   adv->setScanResponse(true);
   BLEDevice::startAdvertising();
+  bmsSetup();                                            // linktop：只读 BMS 客户端（不自动扫描；有保存的目标才自动重连）
   idlePowerOffReset(&idlePowerOffTimer, millis());
   Serial.println(String("MotoNav ready, firmware ") + FW_VERSION);
 }
@@ -9519,6 +9813,7 @@ void loop() {
 
   touchPoll();                                         // v5.2 按住接听 / v5.3 滑动换页
   batPoll();                                           // v6.8 电量
+  bmsLoop();                                           // linktop：BMS 蓝牙事件、串口调试命令、方屏页面刷新
   // 4. 需要时重画导航画面
   // v6.5 配对：整屏显示配对码，配好 / 失败 / 60 秒 / 断开后回到原来的画面
   if (pairReq) {
@@ -9531,6 +9826,7 @@ void loop() {
     pairOn = false; pairDone = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page >= 3) sqDirty = true;
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9546,6 +9842,7 @@ void loop() {
     wasCall = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page >= 3) sqDirty = true;
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -9565,6 +9862,7 @@ void loop() {
     if (!callOn && !pairOn) {
       if (page == 2) musicDirty = true;
       else if (page == 1) wxDirty = true;
+      else if (page >= 3) sqDirty = true;
       else if (inNav) navDirty = true;
       else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
     }
