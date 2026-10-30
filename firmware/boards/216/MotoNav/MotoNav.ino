@@ -255,6 +255,7 @@
 #include <driver/rtc_io.h>
 #include "IdlePowerOff.h"
 #include "BmsData.h"
+#include "BmsSquareUI.h"
 #include "BmsScan.h"
 
 // Explicitly opt in for bench testing; never present simulated values as live.
@@ -2132,6 +2133,8 @@ void animateCat() {
 // 页面：导航左滑天气，右滑音乐，上下滑也可查看天气
 int page = 0;                               // 0 = 导航 / 首页，1 = 天气，2 = 音乐，3 = 电池
 unsigned long pageAt = 0;
+bool bmsDetail = false;
+int bmsCellPage = 0;
 
 // 页面顺序对应滑动位置：音乐在左，主页居中，天气在右；导航主页不显示。
 void drawPageDots() {
@@ -2397,6 +2400,8 @@ int musicButtonAt(int x, int y);
 void musicTap(int x, int y);
 void dragEnd();
 void dragAbort();
+void drawBms();
+void touchVectorToCanvas(float &dx, float &dy);
 
 // 读触摸：按下 → 报坐标；来电时按住够久 → 接听；拖动 → 跟手换页（v5.5）
 // 手指离开超过 0.15 秒才算松开（防止读数偶尔丢一下）
@@ -2431,6 +2436,14 @@ void touchPoll() {
     else {
       if (page == 2 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) musicTap(touchX0, touchY0);
       if (page == 1 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) weatherTap();
+      if (page == 3 && abs(touchX1 - touchX0) < 36 && abs(touchY1 - touchY0) < 36) {
+        float dx = touchX0 - CX, dy = touchY0 - CX;
+        touchVectorToCanvas(dx, dy);
+        if (!bmsDetail) { bmsDetail = true; bmsCellPage = 0; }
+        else if (dy + CX < 100) bmsDetail = false;
+        else bmsCellPage = (bmsCellPage + 1) % 4;
+        drawBms();
+      }
       dragEnd();
     }
     touchEat = false;
@@ -2812,28 +2825,12 @@ static inline uint16_t dim565(uint16_t c, uint32_t k) {   // k: 0~32，32 = 原�
   return (uint16_t)(((r * k >> 5) << 11) | ((g * k >> 5) << 5) | (b * k >> 5));
 }
 
-// Cell values are displayed only when the entire sample is valid and fresh.
+// Reuses the production Arduino_GFX canvas; unavailable data is never invented.
 void drawBms() {
-  onWaitScreen = false;
-  gfx->fillScreen(C_BLACK);
-  printCentered(MOTONAV_BMS_SIMULATION ? "BMS SIMULATION" : "BMS", CX, 53, 2, C_CYAN);
-  bool fresh = bms.fresh(millis(), 15000);
-  printCentered(fresh ? "CONNECTED" : bms.link == Bms::Link::Connected ? "CONNECTED / NO DATA" : bms.link == Bms::Link::Connecting ? "CONNECTING" : "NO LIVE DATA", CX, 78, 2, fresh ? C_GREEN : C_GREY);
-  String summary = fresh && (bms.valid & Bms::Soc) ? String("SOC ") + String(bms.soc, 0) + "%" : "SOC --";
-  if (fresh && (bms.valid & Bms::Voltage)) summary += String("  ") + String(bms.voltage, 1) + "V";
-  printCentered(summary, CX, 105, 2, C_WHITE);
-  float delta;
-  if (fresh && bms.maxDelta(delta)) printCentered(String("DELTA ") + String(delta * 1000, 0) + "mV", CX, 130, 2, C_GREY);
-  for (int i = 0; i < 24; ++i) {
-    int col = i / 12, row = i % 12;
-    gfx->setTextSize(2); gfx->setTextColor(C_WHITE);
-    gfx->setCursor(85 + col * 160, 161 + row * 20);
-    if (i < 9) gfx->print("0");
-    gfx->print(i + 1); gfx->print(" ");
-    if (fresh && (bms.valid & Bms::Cells)) gfx->print(String(bms.cells[i], 3));
-    else gfx->print("---");
-  }
-  drawPageDots(); needFlush = true;
+  onWaitScreen = false; frameIsMap = false;
+  if (bmsDetail) BmsSquareUI::cells(*gfx, bms, millis(), MOTONAV_BMS_SIMULATION, bmsCellPage);
+  else BmsSquareUI::dashboard(*gfx, bms, millis(), MOTONAV_BMS_SIMULATION);
+  needFlush = true;
 }
 
 // 画一个页面到画布（不改当前页）
@@ -9568,8 +9565,8 @@ void loop() {
   // Explicit bench-only fixture; refreshed locally, never derived from BLE.
   bms.link = Bms::Link::Connected; bms.hasUpdate = true; bms.updatedAt = millis();
   bms.valid = Bms::Soc | Bms::Voltage | Bms::Current | Bms::Temperature | Bms::Cells;
-  bms.soc = 73; bms.voltage = 79.2f; bms.current = -5; bms.temperature = 25;
-  for (int i = 0; i < 24; ++i) bms.cells[i] = 3.288f + i * 0.001f;
+  bms.soc = 40.6f; bms.voltage = 78.89f; bms.current = 0; bms.temperature = 22;
+  for (int i = 0; i < 24; ++i) bms.cells[i] = 3.286f + (i % 3) * 0.001f;
 #endif
   static uint32_t bmsDrawAt = 0;
   if (!callOn && !pairOn && !sliding && millis() - bmsDrawAt >= 1000) {
