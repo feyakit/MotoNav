@@ -48,7 +48,7 @@ arduino-cli compile --jobs 2 --libraries firmware/libraries --build-path /tmp/mn
 ```
 
 结果（2026-10-30，云端 aarch64 Debian 13）：**编译通过**，`EXIT=0`。
-- `Sketch uses 1583955 bytes (50%) of program storage space. Maximum is 3145728 bytes.`
+- `Sketch uses 1582763 bytes (50%) of program storage space. Maximum is 3145728 bytes.`
 - `Global variables use 89812 bytes (27%) of dynamic memory, leaving 237868 bytes for local variables.`
 - 对比 adapt-216 基线（feature/byd-bms 记录的同核心构建）：约 1,277,611 B / 88,516 B。增加的约 300 KB 主要是内置中文位图字体（SqFont.h，约 262 KB 字形数据），静态 RAM 只多约 1.3 KB；地图状态栏备份缓冲（44 KB）按需从 PSRAM 分配。
 - 这只证明能编译链接；运行时堆、双连接、帧率都没有实测。
