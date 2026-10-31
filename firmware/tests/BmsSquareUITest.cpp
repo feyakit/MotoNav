@@ -13,14 +13,20 @@ struct Canvas {
 int main() {
   Bms::Data b; Canvas offline;
   BmsSquareUI::dashboard(offline,b,1000,false);
-  assert(offline.has("NO DATA") && offline.has("--%") && offline.has("-- V") && !offline.has("LIVE"));
+  char soc[24]; BmsSquareUI::formatSoc(soc,sizeof(soc),b,1000);
+  assert(std::string(soc)=="--%");
+  assert(offline.has("NO DATA") && !offline.has("LIVE"));
+  assert(SquareSmall::supports("-- V") && SquareSmall::supports("18.84 Ah"));
   b.link=Bms::Link::Connected; b.hasUpdate=true; b.updatedAt=1000; b.valid=Bms::Soc|Bms::Cells;
-  b.soc=40.6f; for(int i=0;i<24;++i)b.cells[i]=3.2f+i*0.001f;
+  b.soc=40.6f; BmsSquareUI::formatSoc(soc,sizeof(soc),b,1000); assert(std::string(soc)=="40.6%"); for(int i=0;i<24;++i)b.cells[i]=3.2f+i*0.001f;
   for(int page=0;page<4;++page) {
     Canvas c; BmsSquareUI::cells(c,b,1000,true,page);
     assert(c.has("SIMULATED") && c.has("SIM DATA"));
     for(int j=0;j<6;++j){char s[8];snprintf(s,sizeof(s),"%02d",page*6+j+1);assert(c.has(s));}
   }
+  BmsSquareUI::formatSoc(soc,sizeof(soc),b,16001); assert(std::string(soc)=="--%");
   Canvas stale; BmsSquareUI::cells(stale,b,16001,false,0);
-  assert(stale.has("NO DATA") && stale.has("--.--- V"));
+  char cell[24]; BmsSquareUI::formatCell(cell,sizeof(cell),false,b.cells[0]);
+  assert(stale.has("NO DATA") && std::string(cell)=="--.--- V");
+  BmsSquareUI::formatCell(cell,sizeof(cell),true,3.287f); assert(std::string(cell)=="3.287 V");
 }

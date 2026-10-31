@@ -1540,7 +1540,7 @@ void drawBattery(int x0, int y0, bool backing = false) {
 
 void drawNavShortcuts() {
   gfx->fillRoundRect(8, 8, 82, 30, 6, C_BLACK);
-  BmsSquareUI::text(*gfx, 18, 15, "MENU", 2, C_CYAN);
+  SquareGlyphs::draw(*gfx, 18, 12, "菜单", C_CYAN, C_BLACK);
   gfx->fillRoundRect(340, 8, 132, 30, 6, C_BLACK);
   char label[24];
   if (bms.fresh(millis(), 15000) && (bms.valid & Bms::Soc))
@@ -2817,7 +2817,7 @@ void drawMusic() {
   gfx->fillScreen(C_BLACK);
   onWaitScreen = false;
   frameIsMap = false;
-  printCentered("MUSIC", CX, 18, 2, C_CYAN);
+  SquareGlyphs::draw(*gfx, CX, 15, "音乐", C_CYAN, C_BLACK, true);
   gfx->fillRoundRect(160, 50, 160, 140, 10, 0x10A3);
   printCentered("NO COVER", CX, 111, 2, C_GREY);
   bool linked = bleConnected && bleAuthed;
