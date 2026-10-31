@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """编译并运行桌面模拟预览，输出 PNG（标注 SIMULATED），并与效果图并排对比。
 用法: python3 firmware/tests/render_square.py [输出目录] [效果图路径]"""
-import subprocess, sys
+import os, shlex, subprocess, sys
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parents[2]
 out = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / 'firmware/.preview')
 mock = Path(sys.argv[2]) if len(sys.argv) > 2 else None
 out.mkdir(parents=True, exist_ok=True)
-subprocess.run(['g++', '-std=c++17', '-O2', '-I', str(ROOT / 'firmware/boards/216/MotoNav'),
+cxx = shlex.split(os.environ['CXX']) if os.environ.get('CXX') else ['g++', '-O2']   # 例：CXX='python3 -m ziglang c++ -O0'
+subprocess.run(cxx + ['-std=c++17', '-I', str(ROOT / 'firmware/boards/216/MotoNav'),
                 str(ROOT / 'firmware/tests/render_square.cpp'), '-o', '/tmp/render_square'], check=True)
 subprocess.run(['/tmp/render_square', str(out)], check=True)
 font = ImageFont.load_default()
