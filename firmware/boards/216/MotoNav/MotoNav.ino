@@ -274,6 +274,9 @@
 #ifndef SQ_NAV_CARDS
 #define SQ_NAV_CARDS 1          // 1 = 箭头导航用方屏卡片布局；0 = 原圆形布局
 #endif
+#ifndef SQ_MAP_FULL
+#define SQ_MAP_FULL 1           // 1 = 地图模式铺满 480x480 方屏（无圆形裁剪）+ 方屏卡片；0 = 原圆形雷达
+#endif
 #ifndef BMS_SIM_DEFAULT
 #define BMS_SIM_DEFAULT 1       // 开发分支默认显示“模拟数据”（界面明确标注）；设置页可关
 #endif
@@ -281,6 +284,9 @@ void sqDrawStatus(bool opaque);
 void sqDrawMusic();
 void sqDrawPage(int p);
 bool sqNavCards();
+void sqMapOverlay(bool dragon);
+void sqMapNorth(float hdg);
+#define MAPQ_HINT_Y 206         // 地图模式：重新规划/更快路线横幅位置（转向卡片和车道下面）
 void sqTap(int x, int y);
 void sqScrollBegin();
 void sqScrollMove(int dy);
@@ -3141,7 +3147,11 @@ String ringDir = "";
 #define FEAT_MAX     7200           // 地图块最多要素数
 #define ROUTE_PTS    24000          // 路线最多点数
 #define MAP_NEAR_M   150            // v2.1 离路口小于这个距离：圆牌放大、显示车道
+#if SQ_MAP_FULL
+#define MAP_PY       318            // linktop：方屏车头位置（= sq::MAPQ_PY，上下卡片之间，多看前方）
+#else
 #define MAP_PY       262            // 车头在屏幕上的 y 位置（偏下，多看前方）
+#endif
 #define POLY_PTS     4096           // 单个要素最多点数（画图用的临时数组）
 #define BADGE_X      130            // 左下角转向小圆牌
 #define BADGE_Y      334
@@ -3636,7 +3646,11 @@ void rasterRows(int y0, int y1, int step) {
   const bool useBack=rasterBackValid && rasterBackHeader.frame==rasterFrame && !rasHasPal && !rasterViceValid;
   const int backU=useBack ? (int)lroundf((rasX0-rasterBackHeader.x0)/rasMpp) : 0;
   const int backV=useBack ? (int)lroundf((rasterBackHeader.y0-rasY0)/rasMpp) : 0;
+#if SQ_MAP_FULL
+  const float R = 1e6f;                                 // linktop：方屏不裁圆
+#else
   const float R = 212;
+#endif
   for (int y = y0; y < y1; y += step) {
     float dyc = y + 0.5f - CX;
     if (RM.pix2 && (y % PIXB) && y > y0 && fabsf(dyc) < R - 2) {  // v6.1 掌机像素：每 3 行只算第一行，其余照抄
@@ -3761,8 +3775,12 @@ void rasterViceRows(int y0, int y1, int step) {
   const int rotation = RM.viceRotation;
   for (int y = y0; y < y1; y += step) {
     float dyc = y + 0.5f - CX;
+#if SQ_MAP_FULL
+    float half = 1e6f; (void)dyc;                       // linktop：方屏不裁圆
+#else
     if (fabsf(dyc) >= 212) continue;
     float half = sqrtf(212.0f * 212.0f - dyc * dyc);
+#endif
     int xa = max(0, (int)(CX - half)), xb = min(LCD_WIDTH - 1, (int)(CX + half));
     float rx = (xa + 0.5f - CX) * inv, ry = (MAP_PY - (y + 0.5f)) * inv;
     float dx = rx * RM.cs + ry * RM.sn, dy = -rx * RM.sn + ry * RM.cs;
@@ -3802,6 +3820,13 @@ void rasterViceRows(int y0, int y1, int step) {
 }
 
 uint32_t rasMsAcc = 0;                     // v5.7 统计：底图用时
+#if SQ_MAP_FULL
+#define MAPROW0 0                          // linktop：方屏整屏 480 行
+#define MAPROW1 LCD_HEIGHT
+#else
+#define MAPROW0 ((int)(CX - 213))
+#define MAPROW1 ((int)(CX + 213))
+#endif
 void drawRasterMap(float cx, float cy, float sc, float cs, float sn) {
   unsigned long t0 = millis();
   RM.fb = gfx->getFramebuffer();
@@ -3821,9 +3846,9 @@ void drawRasterMap(float cx, float cy, float sc, float cs, float sn) {
     // 按方形像素的面积覆盖率过渡，斜边的支撑范围自然扩展到约 1.414 像素。
     RM.viceGain = (int32_t)(sc * rasMpp * (65536.0f / (127.0f * 1.5f)));
     RM.viceRotation = (int)lroundf(atan2f(sn, cs) * (32.0f / PI));
-    parallelRows(rasterViceRows, (int)(CX - 213), (int)(CX + 213));
+    parallelRows(rasterViceRows, MAPROW0, MAPROW1);
   } else {
-    parallelRows(rasterRows, (int)(CX - 213), (int)(CX + 213));
+    parallelRows(rasterRows, MAPROW0, MAPROW1);
   }
   rasMsAcc += millis() - t0;
 }
@@ -8351,7 +8376,11 @@ void drawNavHints(int bannerY) {
     drawBanner("FASTER ROUTE  -" + String(fasterMin) + "min", bannerY, C_GREEN);
   }
   if (gpsWeak) {                                                  // 左上角：橙色 “GPS” 加一条斜杠
+#if SQ_MAP_FULL
+    const int gx = frameIsMap ? 48 : CX - 128, gy = frameIsMap ? 230 : 150;   // linktop：地图模式让开顶部卡片
+#else
     const int gx = CX - 128, gy = 150;
+#endif
     aaDisc(gx, gy, 19, C_BLACK);
     aaDisc(gx, gy, 17, 0x4208);
     printCentered("GPS", gx + 1, gy - 7, 1, C_ORANGE);
@@ -8364,6 +8393,12 @@ void drawNavHints(int bannerY) {
 // v3.8 顶部车速/测速牌/车道、底部箭头和行程信息、车头箭头占的地方（这些后画，电子眼图标要提前让开）
 void addHudObstacles() {
   obsAdd(CX - 15, MAP_PY - 18, CX + 15, MAP_PY + 16);                 // 车头箭头
+#if SQ_MAP_FULL
+  obsAdd(0, 0, LCD_WIDTH, (laneN > 0 ? sq::MAPQ_LANE_Y + sq::MAPQ_LANE_H : sq::MAPQ_TOP_Y + sq::MAPQ_TOP_H) + 4);   // 状态栏 + 转向卡片（+车道）
+  obsAdd(0, 300, 90, sq::MAPQ_BOT_Y);                                  // 北向小罗盘（左下）
+  obsAdd(0, sq::MAPQ_BOT_Y - 4, LCD_WIDTH, LCD_HEIGHT);                // 底部卡片
+  return;
+#endif
   if (speedKmh >= 0) {
     int sx = hasCam ? CX - 40 : CX;
     obsAdd(sx - 60, 36, sx + 60, 92);                                   // 车速数字 + km/h
@@ -8738,7 +8773,11 @@ void drawMapFrame() {
   float targetS = constrain(0.85f - posKmh * 0.006f, 0.38f, useRaster ? 0.6f : 0.85f);
   viewScale += (targetS - viewScale) * (1.0f - expf(-vdt / 1.2f));   // v3.7 缩放也按时间平滑
   float sc = viewScale, hs = viewHdg * PI / 180, cs = cosf(hs), sn = sinf(hs);
+#if SQ_MAP_FULL
+  float viewR = 420 / sc;                               // linktop：车头到方屏最远角约 408 px
+#else
   float viewR = (CX + (MAP_PY - CX) + 30) / sc;
+#endif
 
   float wk = sc / 0.6f;
   profT = micros();
@@ -8802,11 +8841,11 @@ void drawMapFrame() {
   profMark(3);
   {
     int st = styleIdx();                                // v6.1 纸地图、蓝图、掌机像素不压暗边缘
-    if (st != ST_DRAGON && st != ST_PAPER && st != ST_BLUEPRINT && st != ST_PIXEL) drawVignette(178, 211, 150);   // v2.9 雷达边缘渐暗
+    if (!SQ_MAP_FULL && st != ST_DRAGON && st != ST_PAPER && st != ST_BLUEPRINT && st != ST_PIXEL) drawVignette(178, 211, 150);   // v2.9 雷达边缘渐暗（方屏不画）
   }
   profMark(4);
   if (styleIdx() == ST_COMPASS) drawCompassRose(viewHdg);   // v6.1 罗盘刻度
-  else if (!dragon) drawNorth(viewHdg);                              // v2.9 北向标记
+  else if (!dragon) { if (SQ_MAP_FULL) sqMapNorth(viewHdg); else drawNorth(viewHdg); }   // v2.9 北向标记（方屏：右侧固定小罗盘）
   if (!dragon && !cleanOn) drawCamIcons(cx, cy, sc, cs, sn);       // v3.8 电子眼图标（v4.9 清爽模式不画）
   profMark(5);
   unsigned long tMapDone = millis();                   // v2.6 统计：画地图用时
@@ -8817,6 +8856,13 @@ void drawMapFrame() {
   bool saveCam = hasCam, saveTrip = tripOn;
   if (cleanOn || dragon) { hasCam = false; tripOn = false; }
   bool over = hasCam && camLimit > 0 && speedKmh > camLimit;
+#if SQ_MAP_FULL
+  (void)over;
+  sqMapOverlay(dragon);                                 // linktop：方屏卡片（转向在上，车速/限速/到达在下）
+  profMark(6); profMark(7); profMark(8); profMark(9);
+  hasCam = saveCam; tripOn = saveTrip;
+  drawNavHints(MAPQ_HINT_Y);
+#else
   {                                                     // v5.9 外圈一次画完
     bool isNear = navDist <= STAGE_NEAR_M;
     // v7.4 平时外圈是行程环；出现转弯倒计时就换成倒计时环（盖掉行程环）
@@ -8832,6 +8878,7 @@ void drawMapFrame() {
   profMark(9);
   hasCam = saveCam; tripOn = saveTrip;
   drawNavHints(300);                                    // v5.0 重新规划中 / 更快路线 / GPS 信号弱
+#endif
   sqDrawStatus(false);                                  // linktop：方屏状态栏（半透明，盖在地图上）
   profMark(10);
   // v2.9 小地图里不画顶部的蓝牙小圆点（会和 N 标记重叠；能收到地图就说明连着）
@@ -9407,6 +9454,20 @@ void sqDrawPage(int p) {
   }
   needFlush = true;
 }
+
+// linktop：地图模式方屏叠加层（地图已铺满整屏）
+void sqMapOverlay(bool dragon) {
+  sq::State st = sqState();                             // 调用前清爽模式已临时关掉 hasCam/tripOn
+  sq::Canvas c(gfx->getFramebuffer());
+  char num[16], unit[4];
+  if (navDist >= 1000) { snprintf(num, sizeof num, "%.1f", navDist / 1000.0f); strcpy(unit, "km"); }
+  else { snprintf(num, sizeof num, "%d", navDist); strcpy(unit, "m"); }
+  st.haveLanes = laneN > 0 && navDir != "S" && navDist <= MAP_NEAR_M;   // 和原地图模式一致：近路口才显示车道
+  (void)dragon;
+  sq::mapOverlay(c, st, num, unit, !cruiseOn);          // 巡航没有转向：只留底部卡片
+}
+static_assert(!SQ_MAP_FULL || MAP_PY == sq::MAPQ_PY, "MAP_PY must match sq::MAPQ_PY");
+void sqMapNorth(float hdg) { sq::Canvas c(gfx->getFramebuffer()); sq::mapNorth(c, hdg); }
 
 bool sqNavCards() {
 #if SQ_NAV_CARDS

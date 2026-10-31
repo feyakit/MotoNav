@@ -558,4 +558,62 @@ static void pageNav(Canvas &c, const State &st, const char *distNum, const char 
   }
 }
 
+// ---------------- 地图模式叠加卡片（地图铺满 480x480，卡片半透明盖在上面） ----------------
+// 车头位置由固件 MAP_PY（方屏 = MAPQ_PY）决定：上卡片和下卡片之间留出前方路线。
+static const int MAPQ_TOP_Y = 52, MAPQ_TOP_H = 100;          // 转向卡片
+static const int MAPQ_LANE_Y = 158, MAPQ_LANE_H = 40;        // 车道条（有车道时）
+static const int MAPQ_BOT_Y = 386, MAPQ_BOT_H = 82;          // 车速 / 限速 / 到达
+static const int MAPQ_PY = 318;                              // 车头 y（前方约 166 px 不被遮挡）
+static const int MAPQ_ALPHA = 214;
+static void mapOverlay(Canvas &c, const State &st, const char *distNum, const char *distUnit, bool showTurn) {
+  char b[24];
+  const uint32_t CB = 0x0E1626;
+  if (showTurn) {
+    c.roundRect(14, MAPQ_TOP_Y, 452, MAPQ_TOP_H, 18, CB, MAPQ_ALPHA);
+    if (st.turnIcon) st.turnIcon(66, MAPQ_TOP_Y + 10, MAPQ_TOP_Y + MAPQ_TOP_H - 10, 92, st.nearTurn);
+    int x = c.text(sqF64, 124, MAPQ_TOP_Y + 2, distNum, st.nearTurn ? ORANGE : TXT);
+    c.text(sqF32, x + 6, MAPQ_TOP_Y + 2 + sqF64.asc - sqF32.asc, distUnit, st.nearTurn ? ORANGE : TXT);
+    if (st.slotAvail && st.slotAvail(0) && st.slot) st.slot(0, 126, MAPQ_TOP_Y + 68, 326, 0, 0xEE);
+    if (st.haveLanes && st.lanes) {
+      c.roundRect(90, MAPQ_LANE_Y, 300, MAPQ_LANE_H, 12, CB, MAPQ_ALPHA);
+      st.lanes(240, MAPQ_LANE_Y + 4, 280, MAPQ_LANE_H - 8);
+    }
+  }
+  c.roundRect(14, MAPQ_BOT_Y, 452, MAPQ_BOT_H, 18, CB, MAPQ_ALPHA);
+  bool over = st.hasCam && st.camLimit > 0 && st.speed > st.camLimit;
+  if (st.speed >= 0) {
+    snprintf(b, sizeof b, "%d", st.speed);
+    int sx = c.text(sqF64, 30, MAPQ_BOT_Y + 2, b, over ? RED : TXT);
+    c.text(sqF20, sx + 6, MAPQ_BOT_Y + 2 + sqF64.asc - sqF20.asc, "km/h", TXT2);
+  } else c.text(sqF20, 30, MAPQ_BOT_Y + 30, "-- km/h", TXT3);
+  if (st.hasCam && st.camLimit > 0) {
+    int ly = MAPQ_BOT_Y + MAPQ_BOT_H / 2 - 2;
+    c.disc(226, ly, 28, TXT); c.ring(226, ly, 28, 6, 0xE02020);
+    snprintf(b, sizeof b, "%d", st.camLimit);
+    c.text(sqF24, 226, ly - 13, b, 0x000000, 1);
+  }
+  if (st.tripOn) {
+    if (st.tripEtaHHMM >= 0) {
+      snprintf(b, sizeof b, "%02d:%02d", (st.tripEtaHHMM / 100) % 24, st.tripEtaHHMM % 100);
+      c.text(sqF32, 448, MAPQ_BOT_Y + 8, b, TXT, 2);
+    }
+    if (st.tripRemainM >= 1000) fmt(b, sizeof b, "%.1f km", st.tripRemainM / 1000.0f); else snprintf(b, sizeof b, "%d m", st.tripRemainM);
+    c.text(sqF16, 448, MAPQ_BOT_Y + 46, b, TXT2, 2);
+  }
+  if (st.tripFrac >= 0) {
+    float f = st.tripFrac > 1 ? 1 : st.tripFrac;
+    c.roundRect(30, MAPQ_BOT_Y + MAPQ_BOT_H - 10, 420, 4, 2, 0x2A3550);
+    c.roundRect(30, MAPQ_BOT_Y + MAPQ_BOT_H - 10, 420 * f, 4, 2, BLUE);
+  }
+}
+// 方屏北向标记：固定在左下（底部卡片上方），箭头指向北
+static void mapNorth(Canvas &c, float hdgDeg) {
+  const float x = 42, y = 346, a = -hdgDeg * 3.14159265f / 180;
+  float s = sinf(a), k = cosf(a);                     // 北方向在屏幕上的单位向量 (s, -k)
+  c.disc(x, y, 22, 0x0E1626, 220);
+  c.tri(x + s * 17, y - k * 17, x - k * 6, y - s * 6, x + k * 6, y + s * 6, 0xFF4040);
+  c.tri(x - s * 12, y + k * 12, x - k * 6, y - s * 6, x + k * 6, y + s * 6, 0x8D97AA);
+  c.text(sqF16, (int)(x + s * 32), (int)(y - k * 32) - 9, "N", TXT, 1);
+}
+
 }  // namespace sq
