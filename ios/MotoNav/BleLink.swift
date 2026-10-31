@@ -71,6 +71,7 @@ final class BleLink: NSObject, ObservableObject {
                                    options: [CBCentralManagerOptionRestoreIdentifierKey: "motonav.central"])
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.requestBuildingCapability()
+            self?.syncClock()
             MusicBridge.shared.syncLyrics()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
                   Date().timeIntervalSince(self.lastWriteAt) > 1.5 else { return }
@@ -338,6 +339,18 @@ final class BleLink: NSObject, ObservableObject {
         Settings.shared.pushAll()
         requestBuildingCapability()
         MapFeeder.shared.resendAll()                    // 圆屏可能重启过：地图块和路线重发
+        lastClockSent = ""; syncClock()
+    }
+
+    /// linktop：给 2.16 方屏状态栏发手机本地时间 "#T,HHMM"（连上时、之后分钟变化时；旧固件忽略）
+    private var lastClockSent = ""
+    private func syncClock() {
+        guard isReady else { return }
+        let c = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let msg = String(format: "#T,%02d%02d", c.hour ?? 0, c.minute ?? 0)
+        guard msg != lastClockSent else { return }
+        lastClockSent = msg
+        sendOnce(msg)
     }
 }
 

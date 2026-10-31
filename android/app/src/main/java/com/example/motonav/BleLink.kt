@@ -453,6 +453,19 @@ object BleLink {
         MusicBridge.refresh(true)
         BootBrand.sync()
         MapFeeder.onLinkReady()            // v2.0 地图块和路线重发
+        handler.removeCallbacks(clockTick)
+        clockTick.run()                    // linktop：手机时间 "#T,HHMM"（连上时发一次，之后每分钟整点发）
+    }
+
+    /** linktop：给 2.16 方屏状态栏发手机本地时间。旧固件忽略不认识的 "#..." 指令。 */
+    private val clockTick = object : Runnable {
+        override fun run() {
+            if (!ready) return
+            val c = java.util.Calendar.getInstance()
+            send(String.format(java.util.Locale.US, "#T,%02d%02d", c.get(java.util.Calendar.HOUR_OF_DAY), c.get(java.util.Calendar.MINUTE)))
+            val toNextMin = 60_000L - (c.get(java.util.Calendar.SECOND) * 1000L + c.get(java.util.Calendar.MILLISECOND)) + 200L
+            handler.postDelayed(this, toNextMin)
+        }
     }
 
     private fun maxWrite(): Int = minOf(mtu - 3, MAX_WRITE)
