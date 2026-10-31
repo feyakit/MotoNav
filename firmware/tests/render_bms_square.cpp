@@ -12,6 +12,7 @@
 struct Canvas {
   uint16_t pixels[480*480] = {}; int cx=0,cy=0,size=1; uint16_t color=0;
   void pixel(int x,int y,uint16_t c){if(x>=0&&y>=0&&x<480&&y<480)pixels[y*480+x]=c;}
+  uint16_t *getFramebuffer(){return pixels;}
   void fillScreen(uint16_t c){std::fill(pixels,pixels+480*480,c);}
   void fillRect(int x,int y,int w,int h,uint16_t c){for(int j=0;j<h;++j)for(int i=0;i<w;++i)pixel(x+i,y+j,c);}
   void fillCircle(int x,int y,int r,uint16_t c){for(int j=-r;j<=r;++j)for(int i=-r;i<=r;++i)if(i*i+j*j<=r*r)pixel(x+i,y+j,c);}

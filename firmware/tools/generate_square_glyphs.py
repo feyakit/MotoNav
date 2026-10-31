@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 root = Path(__file__).resolve().parents[1]
 fontpath = sys.argv[1] if len(sys.argv) > 1 else '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
 font = ImageFont.truetype(fontpath, 20, index=2)
-chars = sorted(set('导航音乐电池蓝牙设置关于功能菜单总电压剩余容量流温度健康状态芯单体最高最低压差连接设备扫描断开附近点击选择正在离线数据模拟'))
+chars = sorted(set('导航音乐电池蓝牙设置关于功能菜单总电压剩余容量流温度健康状态芯单体最高最低压差连接设备扫描断开附近点击查看选择正在离线数据模拟'))
 lines = ['#pragma once', '#include <stdint.h>', '// Generated from Noto Sans CJK SC; see firmware/licenses/Noto-CJK-copyright.txt.', 'namespace SquareGlyphData {', 'struct Glyph { uint16_t code; uint8_t pixels[200]; };', 'static const Glyph glyphs[] = {']
 for ch in chars:
     im = Image.new('L', (20, 20), 0)
@@ -44,7 +44,7 @@ lines += ['struct Glyph { char code; uint8_t width; const uint8_t *pixels; };', 
 small = ImageFont.truetype(boldpath, 20, index=2)
 lines = ['#pragma once', '#include <stdint.h>', '// Generated from Noto Sans CJK SC Bold; see firmware/licenses/Noto-CJK-copyright.txt.', 'namespace SquareSmallData {']
 entries = []
-for ch in dict.fromkeys('0123456789.-% VACAhm'):
+for ch in dict.fromkeys('0123456789.-% ABCDEFGHIJKLMNOPQRSTUVWXYZhm'):
     width = max(1, int(small.getlength(ch) + .5))
     im = Image.new('L', (width, 24), 0)
     ImageDraw.Draw(im).text((0, -5), ch, font=small, fill=255)

@@ -10,20 +10,59 @@
 // functions are exercised by the host framebuffer renderer for review.
 namespace BmsSquareUI {
 static const uint16_t BLACK=0x0000, WHITE=0xffff, MUTED=0x8cb2, CARD=0x10a3,
-  TRACK=0x0885, BLUE=0x047f, GREEN=0x0669, YELLOW=0xfe60;
+  TRACK=0x0885, BLUE=0x047f, GREEN=0x07e9, YELLOW=0xfe60;
 
 template<class G> void text(G &g, int x, int y, const char *s, int size, uint16_t color, bool centered=false) {
   if (centered) { int n=0; while (s[n]) ++n; x-=n*size*3; }
   g.setTextSize(size); g.setTextColor(color); g.setCursor(x,y); g.print(s);
 }
+// Draw antialiased circles directly into the same RGB565 canvas used by the
+// panel. The host renderer exposes the same framebuffer for review.
+inline uint16_t mix(uint16_t fg,uint16_t bg,unsigned a) {
+  unsigned r=(((fg>>11)&31)*a+((bg>>11)&31)*(255-a)+127)/255;
+  unsigned g=(((fg>>5)&63)*a+((bg>>5)&63)*(255-a)+127)/255;
+  unsigned b=((fg&31)*a+(bg&31)*(255-a)+127)/255;
+  return (uint16_t)((r<<11)|(g<<5)|b);
+}
+template<class G> void antialiasedDisc(G &g,int cx,int cy,float radius,uint16_t color) {
+  uint16_t *fb=g.getFramebuffer();
+  if(!fb) { g.fillCircle(cx,cy,(int)radius,color); return; }
+  int extent=(int)radius+1;
+  for(int y=cy-extent;y<=cy+extent;++y) {
+    if(y<0 || y>=480) continue;
+    for(int x=cx-extent;x<=cx+extent;++x) {
+      if(x<0 || x>=480) continue;
+      float dx=x-cx,dy=y-cy;
+      float cov=radius+0.5f-sqrtf(dx*dx+dy*dy);
+      if(cov<=0) continue;
+      unsigned alpha=(unsigned)(fminf(cov,1.0f)*255.0f);
+      uint16_t &pixel=fb[y*480+x]; pixel=alpha>=255 ? color : mix(color,pixel,alpha);
+    }
+  }
+}
+template<class G> void softCard(G &g,int x,int y,int w,int h,int r,uint16_t color) {
+  g.fillRoundRect(x,y,w,h,r,color);
+  // Only corners need antialiasing. Their background is the black canvas.
+  for(int yy=0;yy<r;++yy) for(int xx=0;xx<r;++xx) {
+    int inside=0;
+    for(int sy=0;sy<4;++sy) for(int sx=0;sx<4;++sx) {
+      float dx=(r-0.5f)-(xx+(sx+0.5f)/4.0f);
+      float dy=(r-0.5f)-(yy+(sy+0.5f)/4.0f);
+      if(dx*dx+dy*dy <= r*r) ++inside;
+    }
+    uint16_t c=mix(color,BLACK,(unsigned)(inside*255/16));
+    g.fillRect(x+xx,y+yy,1,1,c); g.fillRect(x+w-1-xx,y+yy,1,1,c);
+    g.fillRect(x+xx,y+h-1-yy,1,1,c); g.fillRect(x+w-1-xx,y+h-1-yy,1,1,c);
+  }
+}
 template<class G> void top(G &g, bool fresh, bool sim) {
   g.fillScreen(BLACK);
-  text(g,16,14,sim ? "SIMULATED" : "BMS",2,sim ? YELLOW : WHITE);
-  text(g,420,14,fresh ? (sim ? "SIM DATA" : "LIVE") : "NO DATA",2,fresh ? GREEN : MUTED,true);
+  SquareSmall::draw(g,16,9,sim ? "SIMULATED" : "BMS",sim ? YELLOW : WHITE,BLACK);
+  SquareSmall::draw(g,400,9,fresh ? (sim ? "SIM DATA" : "LIVE") : "NO DATA",fresh ? GREEN : MUTED,BLACK,true);
   g.fillRect(12,42,456,2,CARD);
 }
 template<class G> void card(G &g,int x,int y,const char *value,const char *label,uint16_t valueColor=WHITE) {
-  g.fillRoundRect(x,y,144,62,9,CARD);
+  softCard(g,x,y,144,62,9,CARD);
   if(SquareSmall::supports(value)) SquareSmall::draw(g,x+72,y+5,value,valueColor,CARD,true);
   else text(g,x+72,y+9,value,2,valueColor,true);
   SquareGlyphs::draw(g,x+72,y+35,label,MUTED,CARD,true);
@@ -36,14 +75,21 @@ template<class G> void dashboard(G &g,const Bms::Data &b,uint32_t now,bool sim) 
   bool fresh=b.fresh(now,15000);
   top(g,fresh,sim);
   float fraction=fresh && (b.valid & Bms::Soc) ? fmaxf(0,fminf(1,b.soc/100.0f)) : 0;
-  // 240-degree gauge; drawing short circles retains the same primitives on
-  // Arduino_GFX and in the host renderer.
-  for(int i=0;i<=240;++i) {
+  // Two-degree overlapping antialiased discs form a smooth 240-degree arc.
+  // The foreground is drawn only for known SOC and never invents a value.
+  for(int i=0;i<=240;i+=2) {
     float a=(150+i)*0.01745329252f;
     int x=240+(int)lroundf(158*cosf(a)), y=211+(int)lroundf(158*sinf(a));
-    g.fillCircle(x,y,11,fresh && (b.valid & Bms::Soc) && i<=240*fraction ? GREEN : TRACK);
+    antialiasedDisc(g,x,y,11,TRACK);
   }
-  text(g,240,108,"SOC",2,MUTED,true);
+  if(fresh && (b.valid & Bms::Soc) && fraction>0) for(int i=0;i<=240*fraction;i+=2) {
+    float a=(150+i)*0.01745329252f;
+    int x=240+(int)lroundf(158*cosf(a)), y=211+(int)lroundf(158*sinf(a));
+    // A restrained green gradient; this is visual styling, not another metric.
+    uint16_t shade = mix(0x07ec,0x05e5,(unsigned)(70+i*150/240));
+    antialiasedDisc(g,x,y,11,shade);
+  }
+  SquareSmall::draw(g,240,104,"SOC",MUTED,BLACK,true);
   char buf[32];
   formatSoc(buf,sizeof(buf),b,now);
   SquareNumeric::draw(g,240,145,buf,WHITE,BLACK);
@@ -60,7 +106,7 @@ template<class G> void dashboard(G &g,const Bms::Data &b,uint32_t now,bool sim) 
   if(fresh && (b.valid & Bms::Health)) snprintf(health,sizeof(health),"%.0f%%",(double)b.soh); else snprintf(health,sizeof(health),"--%%");
   const char *status = !fresh || !(b.valid & Bms::Alarms) ? "--" : b.alarms ? "ALERT" : "OK";
   card(g,16,370,t,"温度"); card(g,168,370,health,"健康度"); card(g,320,370,status,"状态",fresh && (b.valid & Bms::Alarms) ? (b.alarms ? YELLOW : GREEN) : MUTED);
-  text(g,240,453,"TAP FOR CELLS",1,MUTED,true);
+  SquareGlyphs::draw(g,240,449,"点击查看电芯",MUTED,BLACK,true);
 }
 inline void formatCell(char *buf,size_t n,bool valid,float value) {
   if(valid) snprintf(buf,n,"%.3f V",(double)value); else snprintf(buf,n,"--.--- V");
