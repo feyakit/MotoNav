@@ -15,7 +15,7 @@
 | 导航/音乐协议 | 文字指令 + 'B' 文字图片 + 'M' 大块数据（地图），见 MotoNav.ino 头部注释 | 不改协议；只新增可选 `#T,HHMM`（手机时间，旧 App 不发则状态栏不显示时间） |
 | 构建 | `build.ps1 -Board 216`（Windows）；`build.py` 只建 175 | Linux 命令见第 3 节 |
 
-风险：`MotoNav.ino` 9600+ 行单文件；地图模式（`drawMapFrame`）是圆形雷达，本分支没重做，只把顶部状态栏换成方屏样式（半透明盖在地图上）。
+风险：`MotoNav.ino` 9600+ 行单文件。地图模式已改为方屏全屏（见第 2.1 节）。
 
 ## 2. 改了什么
 
@@ -37,6 +37,23 @@
 - 串口命令（115200）：`bms scan` / `bms list` / `bms connect <序号>` / `bms disconnect` / `bms forget`。
 - 固件版本号 `v7.12.1-216-linktop`。
 
+## 2.1 地图模式（方屏，2026-10-31）
+
+- `-DSQ_MAP_FULL=1`（默认）：底图铺满 480x480，不再按半径 212 裁圆（`rasterRows` / `rasterViceRows` 都改了，行范围 `MAPROW0..MAPROW1` = 0..480）；`-DSQ_MAP_FULL=0` 回到原圆形雷达。
+- 车头 `MAP_PY` 262 → **318**（= `sq::MAPQ_PY`，有 static_assert）；车头上方约 166 px（152..318）不被卡片挡，卡片半透明（alpha 214），卡片下面的路线仍隐约可见。要素裁剪半径 `viewR = 420/sc`（车头到最远角约 408 px）。
+- 叠加层 `sq::mapOverlay`（SqPages.h，固件和预览共用）：上 = 转向卡片（图标 + 距离 + 路名图片，y 52..152；近路口橙色；有车道时下面一条车道条 y 158..198，和原地图模式一样只在 150 m 内显示）；下 = 车速 / 限速牌 / 到达时刻 + 剩余里程 / 行程进度条（y 386..468）。巡航模式不画转向卡片。清爽模式 / 龙风格照旧隐藏限速和行程。
+- 去掉的圆屏元素（仅 SQ_MAP_FULL）：外圈行程/倒计时环、边缘渐暗、`drawMapSpeed` / `drawMapLanes` / `drawMapBadge`、绕圆周转的 N 标记 → 改成左下角固定小罗盘 `sq::mapNorth`（红针指北）。重新规划/更快路线横幅移到 y 206；“GPS 弱”标记在地图模式移到左侧 (48,230)。电子眼图标避让框（`addHudObstacles`）按新卡片位置登记。
+- 目的地在范围外时仍贴在半径 192 的圆上指方向（方屏里显得偏内，未改）。
+- **楼块链路（已核对代码，未实机）**：App 连上后 `MapFeeder.onLinkReady()` 发 `#GB?` → 固件置 `pendingBuildingCapability` → 通知通道回 `CAP,BLD,1` → `BleLink.buildingsSupported=true` → `MapFeeder.onBuildingCapability()`；`buildingMode()` = 地图来源为**高德（SRC_AMAP）** + App 设置里“俯视楼块”开关（默认开，`map_buildings`）+ 固件支持。高德来源时 `AmapBuildings` 把楼块写成图片地图索引 4（屋顶）/ 5（轮廓），固件 4-bit 图片地图路径按 `RM.pal[4]/[5]` 上色（主题色；卫星图来源用照片自带色）。App 侧无需改动。
+  - 限制：天地图 / OSM 来源没有楼块（协议只在高德图片地图里带）；风格 1 的“vice 平滑底图”（大块类型 vice，每格 2 bit 材质）只有 4 种材质，**没有楼块**——高德楼块模式下手机发的是普通 4-bit 图片地图，所以能显示；如果你看到 vice 平滑底图就看不到楼块。
+- 性能：整屏底图像素约 23 万（圆形约 14 万），底图耗时预计增加约 60%（未实测）；App 的帧率统计（S/Q 报文）可以看 rasMs。若掉帧，可先 `-DSQ_MAP_FULL=0` 对比。
+
+## 2.2 手机时间 `#T,HHMM`
+
+- Android `BleLink.kt`：连接就绪（`resendAll` 末尾）发一次，之后每到整分钟发一次（Handler，断开后自动停）。
+- iOS `BleLink.swift`：连接就绪发一次，之后 2 秒心跳里分钟变化时发（`sendOnce`，不进重连补发）。
+- 旧固件（175/185b）对不认识的 `#...` 指令直接忽略（已确认 175 第 9228 行）。
+
 ## 3. 构建
 
 环境：arduino-cli 1.5.2（linux arm64），esp32:esp32 **3.3.10**，仓库自带 `firmware/libraries`（GFX 1.6.9、SensorLib 0.5.0）。
@@ -51,6 +68,7 @@ arduino-cli compile --jobs 2 --libraries firmware/libraries --build-path /tmp/mn
 - `Sketch uses 1582763 bytes (50%) of program storage space. Maximum is 3145728 bytes.`
 - `Global variables use 89812 bytes (27%) of dynamic memory, leaving 237868 bytes for local variables.`
 - 对比 adapt-216 基线（feature/byd-bms 记录的同核心构建）：约 1,277,611 B / 88,516 B。增加的约 300 KB 主要是内置中文位图字体（SqFont.h，约 262 KB 字形数据），静态 RAM 只多约 1.3 KB；地图状态栏备份缓冲（44 KB）按需从 PSRAM 分配。
+- 2026-10-31 地图方屏化之后重新编译：**EXIT=0**，`Sketch uses 1577843 bytes (50%)`，`Global variables use 87804 bytes (26%)`（arduino-cli 1.5.1，同核心 3.3.10）。
 - 这只证明能编译链接；运行时堆、双连接、帧率都没有实测。
 - 注意：arduino-cli 会在草图目录生成 `build/`，已加入 .gitignore。
 
@@ -58,7 +76,10 @@ arduino-cli compile --jobs 2 --libraries firmware/libraries --build-path /tmp/mn
 
 ```sh
 python3 firmware/tests/render_square.py firmware/.preview design_mockup.png   # 需要 g++、Pillow
+# 没有 g++ 时（2026-10-31 云端就没有）：pip install ziglang 后
+# CXX='python3 -m ziglang c++ -target aarch64-linux-musl -mcpu=generic -O2 -fno-sanitize=all' python3 firmware/tests/render_square.py ...
 ```
+（zig/clang 也可用 -O2；预览程序里不要写有符号溢出，clang 会编成陷阱指令。）
 同时跑数据模型自检（最高/最低/压差、过期判定）。图在 `docs/linktop/`。
 
 ## 4. 双 BLE（手机 + BMS）可行性——结论：配置上可行，未实测
@@ -92,8 +113,8 @@ python3 firmware/tests/render_square.py firmware/.preview design_mockup.png   # 
 ## 7. 未解决问题
 
 - 协议未知 → 无真实电池数据（BmsProtocol 是桩）。
-- 地图模式仍是圆形雷达布局，只换了状态栏。
-- 设备没有可靠时钟：状态栏时间需要 App 发 `#T,HHMM`（App 未改）；剩余时间（分钟）同理没显示，只显示剩余里程和到达时刻。
+- 地图模式方屏化只做过桌面模拟预览（`docs/linktop/05_map_square.png`、`06_map_square_near.png`，合成地图，不是实机/真实高德数据）。
+- 状态栏时间依赖 App 发 `#T,HHMM`（Android / iOS 已加，均未编译/实测）；剩余时间（分钟）仍未显示，只显示剩余里程和到达时刻。
 - 音乐封面没有数据源（协议无专辑图），显示装饰占位；效果图里的“收藏”心形按钮未实现（无对应协议）。
-- 页面全屏重画用逐像素 AA，单页约几十 ms（估计值，未实测），列表滚动可能不够顺滑。
+- 页面全屏重画用逐像素 AA，单页约几十 ms（估计值，未实测），列表滚动可能不够顺滑（局部重画未做：需要改推屏任务支持局部区域，非小改动）。
 - 所有触摸坐标、方向沿用 adapt-216 的未实测假设（ADAPT_216.md 第 3 节）。
